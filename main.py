@@ -3,6 +3,7 @@ import time
 import logging
 import datetime
 import html
+import random
 import requests
 import telebot
 from telebot import types
@@ -107,6 +108,14 @@ def auto_setup_db():
         username TEXT,
         join_date TEXT
     );
+    CREATE TABLE IF NOT EXISTS user_settings (
+        user_id BIGINT PRIMARY KEY,
+        active_workspace BIGINT
+    );
+    CREATE TABLE IF NOT EXISTS invites (
+        code TEXT PRIMARY KEY,
+        owner_id BIGINT
+    );
     ALTER TABLE files ADD COLUMN IF NOT EXISTS file_unique_id TEXT;
     ALTER TABLE files ADD COLUMN IF NOT EXISTS message_id BIGINT;
     ALTER TABLE files ADD COLUMN IF NOT EXISTS media_group_id TEXT;
@@ -114,10 +123,19 @@ def auto_setup_db():
 
 auto_setup_db()
 
+# --- Workspace Helper: Share Drive Logic ---
+def get_workspace(uid):
+    res = run_query("SELECT active_workspace FROM user_settings WHERE user_id = ?", (uid,), fetch=True)
+    if res:
+        return res[0][0]
+    else:
+        run_query("INSERT INTO user_settings (user_id, active_workspace) VALUES (?, ?)", (uid, uid))
+        return uid
+
 # ==========================================
 # 4. Helper: Send Photos in 10-Item Grid
 # ==========================================
-def send_photos_as_grid(chat_id, photo_list, uid):
+def send_photos_as_grid(chat_id, photo_list, wid):
     chunk_size = 10
     for i in range(0, len(photo_list), chunk_size):
         chunk = photo_list[i:i + chunk_size]
@@ -146,7 +164,7 @@ def main_keyboard(uid):
     return markup
 
 # ==========================================
-# 6. Basic Commands
+# 6. Basic & Share Commands
 # ==========================================
 @bot.message_handler(commands=['start'])
 def start_cmd(message):
@@ -159,22 +177,23 @@ def start_cmd(message):
     run_query("INSERT INTO users_list (user_id, full_name, username, join_date) VALUES (?, ?, ?, ?) ON CONFLICT (user_id) DO NOTHING", 
               (uid, full_name, uname, date_now))
 
-    existing_pl = run_query("SELECT id FROM playlists WHERE user_id = ?", (uid,), fetch=True)
+    wid = get_workspace(uid)
+    existing_pl = run_query("SELECT id FROM playlists WHERE user_id = ?", (wid,), fetch=True)
     if not existing_pl:
-        run_query("INSERT INTO playlists (user_id, playlist_name) VALUES (?, '🎬 Default Series')", (uid,))
-        run_query("INSERT INTO playlists (user_id, playlist_name) VALUES (?, '🎨 My Assets')", (uid,))
+        run_query("INSERT INTO playlists (user_id, playlist_name) VALUES (?, '🎬 Default Series')", (wid,))
+        run_query("INSERT INTO playlists (user_id, playlist_name) VALUES (?, '🎨 My Assets')", (wid,))
 
     mention = f"<a href='tg://user?id={uid}'>{html.escape(full_name)}</a>"
     welcome_text = (
         f"✨ আসসালামু আলাইকুম, {mention}! ✨\n\n"
-        f"🚀 <b>আপনার স্মার্ট ক্লাউড ড্রাইভ ও নোটস বটে স্বাগতম!</b>\n\n"
-        f"📌 <b>প্লেলিস্ট কমান্ডস:</b>\n"
-        f"• নতুন প্লেলিস্ট: <code>/add প্লেলিস্টের নাম</code>\n"
-        f"• প্লেলিস্ট মুছতে: <code>/rem</code>\n\n"
-        f"🔄 <b>রিপ্লেস ও অ্যালবাম নেমিং:</b>\n"
-        f"• কোনো অ্যালবামের একটি ছবিতে Reply দিয়ে নাম পাঠালে সম্পূর্ণ অ্যালবামটি সেই নামে রিনেম হয়ে যাবে!\n"
-        f"• সিঙ্গেল ফটো/ভিডিওতে Reply দিয়ে নতুন ফাইল পাঠালে তা সরাসরি Replace হবে।\n\n"
-        f"📝 <b>নোটস অপশন:</b> নিচের <b>📝 নোটস</b> মেনু ব্যবহার করুন।\n\n"
+        f"🚀 <b>আপনার স্মার্ট ক্লাউড ড্রাইভে স্বাগতম!</b>\n\n"
+        f"📌 <b>কমান্ডস ও রিনেম:</b>\n"
+        f"• নতুন প্লেলিস্ট: <code>/add নাম</code> | মুছতে: <code>/rem</code>\n"
+        f"• <b>অ্যালবাম রিনেম:</b> অ্যালবামের একটি ছবিতে Reply দিয়ে নাম দিন।\n\n"
+        f"👥 <b>ড্রাইভ শেয়ারিং (পার্টনার অ্যাক্সেস):</b>\n"
+        f"• আপনার ড্রাইভ শেয়ার করতে লিখুন: <code>/share</code>\n"
+        f"• অন্যের ড্রাইভে যুক্ত হতে লিখুন: <code>/join কোড</code>\n"
+        f"• শেয়ারিং থেকে বের হতে: <code>/leave</code>\n\n"
         f"🆔 <b>User ID:</b> <code>{uid}</code>\n"
         f"📅 <b>Member Since:</b> {date_now}"
     )
@@ -188,27 +207,70 @@ def start_cmd(message):
     except:
         bot.send_message(uid, welcome_text, reply_markup=main_keyboard(uid))
 
+@bot.message_handler(commands=['share'])
+def share_cmd(message):
+    uid = message.from_user.id
+    wid = get_workspace(uid)
+    if wid != uid:
+        return bot.reply_to(message, "⚠️ আপনি বর্তমানে অন্যের শেয়ার্ড ড্রাইভে যুক্ত আছেন। নিজের ড্রাইভ শেয়ার করতে আগে <code>/leave</code> কমান্ড দিয়ে বের হয়ে আসুন।")
+    
+    code = f"DRIVE-{random.randint(100000, 999999)}"
+    run_query("INSERT INTO invites (code, owner_id) VALUES (?, ?)", (code, uid))
+    bot.reply_to(message, f"🔗 <b>আপনার ড্রাইভ শেয়ারিং কোড:</b>\n\n<code>/join {code}</code>\n\nযাকে আপনার ড্রাইভের অ্যাক্সেস দিতে চান, তাকে উপরের কমান্ডটি কপি করে বটকে পাঠাতে বলুন।")
+
+@bot.message_handler(commands=['join'])
+def join_cmd(message):
+    uid = message.from_user.id
+    args = message.text.split()
+    if len(args) < 2:
+        return bot.reply_to(message, "⚠️ অনুগ্রহ করে ইনভাইট কোড দিন।\nউদাহরণ: <code>/join DRIVE-123456</code>")
+    
+    code = args[1]
+    invite = run_query("SELECT owner_id FROM invites WHERE code = ?", (code,), fetch=True)
+    if not invite:
+        return bot.reply_to(message, "❌ ইনভাইট কোডটি ভুল বা মেয়াদোত্তীর্ণ!")
+    
+    owner_id = invite[0][0]
+    if owner_id == uid:
+        return bot.reply_to(message, "⚠️ এটি আপনার নিজেরই ব্যক্তিগত ড্রাইভ!")
+    
+    get_workspace(uid) # ensure row exists
+    run_query("UPDATE user_settings SET active_workspace = ? WHERE user_id = ?", (owner_id, uid))
+    bot.reply_to(message, "✅ <b>অভিনন্দন! আপনি সফলভাবে শেয়ার্ড ড্রাইভে যুক্ত হয়েছেন।</b>\nএখন থেকে আপনার এবং আপনার পার্টনারের ফাইল, নোটস এবং প্লেলিস্টগুলো একসাথে সিঙ্ক হবে।")
+
+@bot.message_handler(commands=['leave'])
+def leave_cmd(message):
+    uid = message.from_user.id
+    wid = get_workspace(uid)
+    if wid == uid:
+        return bot.reply_to(message, "⚠️ আপনি বর্তমানে কোনো শেয়ার্ড ড্রাইভে যুক্ত নেই। আপনি আপনার পার্সোনাল ড্রাইভেই আছেন।")
+    
+    run_query("UPDATE user_settings SET active_workspace = ? WHERE user_id = ?", (uid, uid))
+    bot.reply_to(message, "✅ আপনি শেয়ার্ড ড্রাইভ থেকে সফলভাবে বের হয়ে নিজের ব্যক্তিগত ড্রাইভে ফিরে এসেছেন।")
+
 @bot.message_handler(commands=['add', 'new'])
 def add_playlist_cmd(message):
     uid = message.from_user.id
+    wid = get_workspace(uid)
     args = message.text.split(maxsplit=1)
     if len(args) < 2:
         return bot.reply_to(message, "⚠️ প্লেলিস্টের নাম দিন।\nউদাহরণ: <code>/add My Tour</code>")
     
     pl_name = args[1].strip()
-    exist = run_query("SELECT id FROM playlists WHERE user_id=? AND playlist_name=?", (uid, pl_name), fetch=True)
+    exist = run_query("SELECT id FROM playlists WHERE user_id=? AND playlist_name=?", (wid, pl_name), fetch=True)
     if exist:
         return bot.reply_to(message, "⚠️ এই নামের প্লেলিস্ট ইতিমধ্যে তৈরি করা আছে!")
     
-    run_query("INSERT INTO playlists (user_id, playlist_name) VALUES (?, ?)", (uid, pl_name))
+    run_query("INSERT INTO playlists (user_id, playlist_name) VALUES (?, ?)", (wid, pl_name))
     bot.reply_to(message, f"✅ <b>{pl_name}</b> প্লেলিস্টটি সফলভাবে তৈরি হয়েছে!")
 
 @bot.message_handler(commands=['rem', 'remove'])
 def remove_playlist_cmd(message):
     uid = message.from_user.id
-    pls = run_query("SELECT playlist_name FROM playlists WHERE user_id = ?", (uid,), fetch=True)
+    wid = get_workspace(uid)
+    pls = run_query("SELECT playlist_name FROM playlists WHERE user_id = ?", (wid,), fetch=True)
     if not pls:
-        return bot.send_message(message.chat.id, "❌ আপনার কোনো প্লেলিস্ট নেই।")
+        return bot.send_message(message.chat.id, "❌ কোনো প্লেলিস্ট নেই।")
     
     markup = types.InlineKeyboardMarkup(row_width=2)
     for p in pls:
@@ -221,27 +283,28 @@ def remove_playlist_cmd(message):
 @bot.message_handler(func=lambda m: m.text in ["📁 প্লেলিস্টসমূহ", "📝 নোটস", "📅 আপলোডের তারিখসমূহ", "🔍 সার্চ ফাইল", "📊 ড্রাইভ ড্যাশবোর্ড", "ℹ️ Help", "⚙️ Admin Panel"])
 def menu_controller(message):
     uid = message.from_user.id
+    wid = get_workspace(uid)
     text = message.text
 
     if text == "📁 প্লেলিস্টসমূহ":
-        pls = run_query("SELECT playlist_name FROM playlists WHERE user_id = ?", (uid,), fetch=True)
+        pls = run_query("SELECT playlist_name FROM playlists WHERE user_id = ?", (wid,), fetch=True)
         if not pls:
             return bot.send_message(message.chat.id, "❌ কোনো প্লেলিস্ট নেই। তৈরি করতে <code>/add নাম</code> কমান্ড ব্যবহার করুন।")
         markup = types.InlineKeyboardMarkup(row_width=2)
         for p in pls:
-            markup.add(types.InlineKeyboardButton(f"📂 {p[0]}", callback_data=f"choose_type|{p[0]}|{uid}"))
+            markup.add(types.InlineKeyboardButton(f"📂 {p[0]}", callback_data=f"choose_type|{p[0]}|{wid}"))
         bot.send_message(message.chat.id, "📁 <b>আপনার প্লেলিস্টসমূহ:</b>", reply_markup=markup)
 
     elif text == "📝 নোটস":
-        show_notes_menu(message.chat.id, uid)
+        show_notes_menu(message.chat.id, wid, message_id=None, uid=uid)
 
     elif text == "📅 আপলোডের তারিখসমূহ":
-        dates = run_query("SELECT date, COUNT(id) FROM files WHERE user_id = ? GROUP BY date ORDER BY date DESC", (uid,), fetch=True)
+        dates = run_query("SELECT date, COUNT(id) FROM files WHERE user_id = ? GROUP BY date ORDER BY date DESC", (wid,), fetch=True)
         if not dates:
             return bot.send_message(message.chat.id, "❌ কোনো ফাইল আপলোড করা হয়নি।")
         
         markup = types.InlineKeyboardMarkup(row_width=1)
-        res_text = "🗓 <b>আপনার আপলোড হিস্ট্রি:</b>\n\n"
+        res_text = "🗓 <b>আপলোড হিস্ট্রি:</b>\n\n"
         for d, count in dates:
             res_text += f"• <b>{d}</b> তারিখে আপলোড হয়েছে: <b>{count}</b> টি ফাইল\n"
             markup.add(types.InlineKeyboardButton(f"📅 {d} ({count} টি ফাইল দেখুন)", callback_data=f"view_date|{d}"))
@@ -252,11 +315,11 @@ def menu_controller(message):
         bot.send_message(message.chat.id, "🔎 ফাইলের নাম বা ক্যাপশন লিখে পাঠান:")
 
     elif text == "📊 ড্রাইভ ড্যাশবোর্ড":
-        p_count = run_query("SELECT COUNT(id) FROM files WHERE user_id=? AND file_type='photo'", (uid,), fetch=True)[0][0]
-        v_count = run_query("SELECT COUNT(id) FROM files WHERE user_id=? AND file_type='video'", (uid,), fetch=True)[0][0]
-        d_count = run_query("SELECT COUNT(id) FROM files WHERE user_id=? AND file_type='document'", (uid,), fetch=True)[0][0]
-        a_count = run_query("SELECT COUNT(id) FROM files WHERE user_id=? AND file_type IN ('audio', 'voice')", (uid,), fetch=True)[0][0]
-        n_count = run_query("SELECT COUNT(id) FROM notes WHERE user_id=?", (uid,), fetch=True)[0][0]
+        p_count = run_query("SELECT COUNT(id) FROM files WHERE user_id=? AND file_type='photo'", (wid,), fetch=True)[0][0]
+        v_count = run_query("SELECT COUNT(id) FROM files WHERE user_id=? AND file_type='video'", (wid,), fetch=True)[0][0]
+        d_count = run_query("SELECT COUNT(id) FROM files WHERE user_id=? AND file_type='document'", (wid,), fetch=True)[0][0]
+        a_count = run_query("SELECT COUNT(id) FROM files WHERE user_id=? AND file_type IN ('audio', 'voice')", (wid,), fetch=True)[0][0]
+        n_count = run_query("SELECT COUNT(id) FROM notes WHERE user_id=?", (wid,), fetch=True)[0][0]
 
         stat_msg = (
             f"📊 <b>আপনার ক্লাউড স্টোরেজ স্ট্যাটাস</b>\n"
@@ -274,11 +337,11 @@ def menu_controller(message):
     elif text == "ℹ️ Help":
         help_msg = (
             "❓ <b>ব্যবহার নির্দেশিকা:</b>\n\n"
-            "• নতুন প্লেলিস্ট: <code>/add প্লেলিস্টের নাম</code>\n"
-            "• প্লেলিস্ট মুছতে: <code>/rem</code>\n"
-            "• <b>অ্যালবাম রিনেম:</b> অ্যালবামের যেকোনো একটি ছবিতে Reply দিয়ে নাম দিলে পুরো অ্যালবামের নাম সেট হবে।\n"
-            "• <b>মিডিয়া রিপ্লেস:</b> যে ফাইলটি বদলাবেন সেটিতে Reply দিয়ে নতুন ফাইল পাঠান।\n"
-            "• <b>নোটস:</b> '📝 নোটস' মেনু থেকে শিরোনামসহ যেকোনো মনো/ফরম্যাটেড টেক্সট সংরক্ষণ করতে পারবেন।"
+            "• প্লেলিস্ট তৈরি: <code>/add নাম</code> | মুছতে: <code>/rem</code>\n"
+            "• <b>শেয়ারিং:</b> <code>/share</code> লিখে কোড নিন এবং অন্যকে <code>/join</code> করতে দিন।\n"
+            "• <b>অ্যালবাম রিনেম:</b> অ্যালবামের একটি ছবিতে Reply দিয়ে নাম দিলে পুরো অ্যালবামের নাম সেট হবে।\n"
+            "• <b>মিডিয়া রিপ্লেস:</b> ফাইলে Reply দিয়ে নতুন ফাইল পাঠান।\n"
+            "• <b>নোটস:</b> '📝 নোটস' মেনু থেকে মনো/ফরম্যাটেড টেক্সট সংরক্ষণ করুন।"
         )
         markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("📩 Admin Inbox", url="https://t.me/rm_rasel_hossain"))
         bot.send_message(message.chat.id, help_msg, reply_markup=markup)
@@ -289,8 +352,8 @@ def menu_controller(message):
 # ==========================================
 # 8. Notes System Functionality
 # ==========================================
-def show_notes_menu(chat_id, uid, message_id=None):
-    notes = run_query("SELECT id, title FROM notes WHERE user_id=? ORDER BY id DESC", (uid,), fetch=True)
+def show_notes_menu(chat_id, wid, message_id=None, uid=None):
+    notes = run_query("SELECT id, title FROM notes WHERE user_id=? ORDER BY id DESC", (wid,), fetch=True)
     markup = types.InlineKeyboardMarkup(row_width=1)
     
     if notes:
@@ -349,8 +412,9 @@ def process_media_batch(uid, chat_id):
         'action': 'save_batch_files',
         'file_batch': files_to_save
     }
-
-    pls = run_query("SELECT playlist_name FROM playlists WHERE user_id = ?", (uid,), fetch=True)
+    
+    wid = get_workspace(uid)
+    pls = run_query("SELECT playlist_name FROM playlists WHERE user_id = ?", (wid,), fetch=True)
     if not pls:
         return bot.send_message(chat_id, "⚠️ আপনার কোনো প্লেলিস্ট নেই! প্রথমে <code>/add প্লেলিস্টের_নাম</code> লিখে তৈরি করুন।")
 
@@ -367,10 +431,10 @@ def process_media_batch(uid, chat_id):
 @bot.callback_query_handler(func=lambda call: True)
 def callback_manager(call):
     uid = call.from_user.id
+    wid = get_workspace(uid)
     data = call.data.split('|')
     action = data[0]
 
-    # --- Playlist Delete Handlers ---
     if action == "ask_del_pl":
         pl_name = data[1]
         markup = types.InlineKeyboardMarkup(row_width=2)
@@ -383,14 +447,13 @@ def callback_manager(call):
 
     elif action == "confirm_del_pl":
         pl_name = data[1]
-        run_query("DELETE FROM files WHERE user_id=? AND playlist_name=?", (uid, pl_name))
-        run_query("DELETE FROM playlists WHERE user_id=? AND playlist_name=?", (uid, pl_name))
+        run_query("DELETE FROM files WHERE user_id=? AND playlist_name=?", (wid, pl_name))
+        run_query("DELETE FROM playlists WHERE user_id=? AND playlist_name=?", (wid, pl_name))
         bot.edit_message_text(f"🗑 <b>{pl_name}</b> প্লেলিস্টটি মুছে ফেলা হয়েছে।", call.message.chat.id, call.message.message_id)
 
     elif action == "cancel_del":
         bot.edit_message_text("❌ বাতিল করা হয়েছে।", call.message.chat.id, call.message.message_id)
 
-    # --- Save Batch to Playlist ---
     elif action == "save_batch_to":
         pl_name = data[1]
         f_state = user_states.get(uid)
@@ -403,16 +466,15 @@ def callback_manager(call):
         for item in batch:
             run_query(
                 "INSERT INTO files (user_id, file_type, file_id, file_unique_id, file_name, playlist_name, date, media_group_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (uid, item['type'], item['id'], item.get('unique_id'), item['name'], pl_name, today, item.get('media_group_id'))
+                (wid, item['type'], item['id'], item.get('unique_id'), item['name'], pl_name, today, item.get('media_group_id'))
             )
         
         del user_states[uid]
         bot.edit_message_text(f"✅ সফলভাবে <b>{len(batch)}</b> টি ফাইল <b>{pl_name}</b> প্লেলিস্টে সেভ হয়েছে!", call.message.chat.id, call.message.message_id)
 
-    # --- Smart Type Auto-Detection ---
     elif action == "choose_type":
         pl_name = data[1]
-        target_uid = int(data[2]) if len(data) > 2 else uid
+        target_uid = int(data[2]) if len(data) > 2 else wid
         
         types_found = run_query("SELECT DISTINCT file_type FROM files WHERE user_id=? AND playlist_name=?", (target_uid, pl_name), fetch=True)
         if not types_found:
@@ -441,7 +503,6 @@ def callback_manager(call):
 
         bot.edit_message_text(f"📂 <b>প্লেলিস্ট: {pl_name}</b>\nকোন ধরনের ফাইল দেখতে চান?", call.message.chat.id, call.message.message_id, reply_markup=markup)
 
-    # --- Show Filtered Files ---
     elif action == "show_filtered":
         pl_name = data[1]
         filter_type = data[2]
@@ -478,7 +539,6 @@ def callback_manager(call):
             except Exception as e:
                 logging.error(f"Send error: {e}")
 
-    # --- Notes Management Callbacks ---
     elif action == "btn_add_note":
         user_states[uid] = {'action': 'waiting_note_title'}
         bot.send_message(call.message.chat.id, "📝 <b>নোটের শিরোনাম (Title) লিখে পাঠান:</b>")
@@ -489,7 +549,7 @@ def callback_manager(call):
 
     elif action == "read_note":
         n_id = int(data[1])
-        note = run_query("SELECT title, content, created_at FROM notes WHERE id=? AND user_id=?", (n_id, uid), fetch=True)
+        note = run_query("SELECT title, content, created_at FROM notes WHERE id=? AND user_id=?", (n_id, wid), fetch=True)
         if not note:
             return bot.answer_callback_query(call.id, "❌ নোটটি পাওয়া যায়নি!")
         
@@ -521,18 +581,17 @@ def callback_manager(call):
 
     elif action == "confirm_del_note":
         n_id = int(data[1])
-        run_query("DELETE FROM notes WHERE id=? AND user_id=?", (n_id, uid))
+        run_query("DELETE FROM notes WHERE id=? AND user_id=?", (n_id, wid))
         bot.answer_callback_query(call.id, "🗑 নোটটি মুছে ফেলা হয়েছে!")
-        show_notes_menu(call.message.chat.id, uid, call.message.message_id)
+        show_notes_menu(call.message.chat.id, wid, call.message.message_id, uid)
 
     elif action == "back_notes_list":
-        show_notes_menu(call.message.chat.id, uid, call.message.message_id)
+        show_notes_menu(call.message.chat.id, wid, call.message.message_id, uid)
 
-    # --- Date View Callback ---
     elif action == "view_date":
         sel_date = data[1]
         files = run_query("SELECT id, file_id, file_name, file_type FROM files WHERE user_id=? AND date=? ORDER BY id ASC", 
-                          (uid, sel_date), fetch=True)
+                          (wid, sel_date), fetch=True)
         if not files:
             return bot.answer_callback_query(call.id, "❌ কোনো ফাইল নেই!")
 
@@ -541,7 +600,7 @@ def callback_manager(call):
 
         photos = [{'id': f[0], 'file_id': f[1], 'caption': f"📝 {f[2]}"} for f in files if f[3] == 'photo']
         if photos:
-            send_photos_as_grid(call.message.chat.id, photos, uid)
+            send_photos_as_grid(call.message.chat.id, photos, wid)
 
         others = [f for f in files if f[3] != 'photo']
         for f_db_id, fid, fname, ftype in others:
@@ -554,7 +613,6 @@ def callback_manager(call):
                 s = bot.send_audio(call.message.chat.id, fid, caption=cap)
             run_query("UPDATE files SET message_id = ? WHERE id = ?", (s.message_id, f_db_id))
 
-    # --- Admin Callbacks ---
     elif action == "adm_list_users" and uid == ADMIN_ID:
         users = run_query("SELECT user_id, full_name, username FROM users_list ORDER BY join_date DESC", fetch=True)
         markup = types.InlineKeyboardMarkup(row_width=1)
@@ -613,6 +671,7 @@ def callback_manager(call):
 @bot.message_handler(content_types=['photo', 'video', 'document', 'audio', 'voice'])
 def handle_incoming_media(message):
     uid = message.from_user.id
+    wid = get_workspace(uid)
     f_type = message.content_type
     f_unique_id = None
     media_grp_id = message.media_group_id
@@ -634,7 +693,6 @@ def handle_incoming_media(message):
         f_unique_id = getattr(message.audio or message.voice, 'file_unique_id', None)
         f_name = message.caption or (message.audio.file_name if f_type == 'audio' and message.audio.file_name else "Audio")
 
-    # Media Replace via Reply
     if message.reply_to_message:
         replied = message.reply_to_message
         target_fuid = None
@@ -655,11 +713,11 @@ def handle_incoming_media(message):
 
         matched = None
         if target_fuid:
-            matched = run_query("SELECT id FROM files WHERE user_id=? AND file_unique_id=?", (uid, target_fuid), fetch=True)
+            matched = run_query("SELECT id FROM files WHERE user_id=? AND file_unique_id=?", (wid, target_fuid), fetch=True)
         if not matched and target_fid:
-            matched = run_query("SELECT id FROM files WHERE user_id=? AND file_id=?", (uid, target_fid), fetch=True)
+            matched = run_query("SELECT id FROM files WHERE user_id=? AND file_id=?", (wid, target_fid), fetch=True)
         if not matched:
-            matched = run_query("SELECT id FROM files WHERE user_id=? AND message_id=?", (uid, replied.message_id), fetch=True)
+            matched = run_query("SELECT id FROM files WHERE user_id=? AND message_id=?", (wid, replied.message_id), fetch=True)
 
         if matched:
             db_file_id = matched[0][0]
@@ -689,25 +747,23 @@ def handle_incoming_media(message):
     media_groups[uid]['timer'].start()
 
 # ==========================================
-# 13. Global Text Handler (Album Rename, Caption Replace, Notes & Search)
+# 13. Global Text Handler
 # ==========================================
 @bot.message_handler(func=lambda m: True, content_types=['text'])
 def global_text_input(message):
     uid = message.from_user.id
+    wid = get_workspace(uid)
     raw_text = message.text.strip()
     html_formatted_text = getattr(message, 'html_text', raw_text)
 
-    # 1. Reply to Replace Caption / Batch Album Rename
     if message.reply_to_message:
         replied = message.reply_to_message
         
-        # Note Content Replace
         active_note = user_states.get(uid, {}).get('active_reading_note_id')
         if active_note and user_states.get(uid, {}).get('msg_id') == replied.message_id:
-            run_query("UPDATE notes SET content = ? WHERE id = ? AND user_id = ?", (html_formatted_text, active_note, uid))
+            run_query("UPDATE notes SET content = ? WHERE id = ? AND user_id = ?", (html_formatted_text, active_note, wid))
             return bot.reply_to(message, "✅ <b>নোটের কনটেন্ট সফলভাবে Replace / Update করা হয়েছে!</b>")
 
-        # Media Match
         target_fid = None
         target_fuid = None
         if replied.photo:
@@ -725,17 +781,16 @@ def global_text_input(message):
 
         matched = None
         if target_fuid:
-            matched = run_query("SELECT id, media_group_id FROM files WHERE user_id=? AND file_unique_id=?", (uid, target_fuid), fetch=True)
+            matched = run_query("SELECT id, media_group_id FROM files WHERE user_id=? AND file_unique_id=?", (wid, target_fuid), fetch=True)
         if not matched and target_fid:
-            matched = run_query("SELECT id, media_group_id FROM files WHERE user_id=? AND file_id=?", (uid, target_fid), fetch=True)
+            matched = run_query("SELECT id, media_group_id FROM files WHERE user_id=? AND file_id=?", (wid, target_fid), fetch=True)
         if not matched:
-            matched = run_query("SELECT id, media_group_id FROM files WHERE user_id=? AND message_id=?", (uid, replied.message_id), fetch=True)
+            matched = run_query("SELECT id, media_group_id FROM files WHERE user_id=? AND message_id=?", (wid, replied.message_id), fetch=True)
 
         if matched:
             f_db_id, grp_id = matched[0]
-            # পুরো অ্যালবামের সব ফাইল একসাথে রিনেম করার লজিক
             if grp_id:
-                run_query("UPDATE files SET file_name = ? WHERE user_id = ? AND media_group_id = ?", (raw_text, uid, grp_id))
+                run_query("UPDATE files SET file_name = ? WHERE user_id = ? AND media_group_id = ?", (raw_text, wid, grp_id))
                 return bot.reply_to(message, f"✅ <b>সম্পূর্ণ অ্যালবামের নাম সফলভাবে সেট করা হয়েছে!</b>\n📝 অ্যালবামের নাম: <b>{raw_text}</b>")
             else:
                 run_query("UPDATE files SET file_name = ? WHERE id = ?", (raw_text, f_db_id))
@@ -748,30 +803,27 @@ def global_text_input(message):
     state_info = user_states.get(uid, {})
     current_action = state_info.get('action')
 
-    # 2. Add Note: Step 1 (Title Input)
     if current_action == 'waiting_note_title':
         user_states[uid] = {
             'action': 'waiting_note_content',
             'note_title': raw_text
         }
-        return bot.send_message(message.chat.id, f"📌 শিরোনাম: <b>{raw_text}</b>\n\n✍️ <b>এবার নোটের বিস্তারিত বিষয়/লেখাটি পাঠান:</b>")
+        return bot.send_message(message.chat.id, f"📌 শিরোনাম: <b>{raw_text}</b>\n\n✍️ <b>এবার নোটের বিস্তারিত বিষয়/লেখাটি পাঠান (মনোস্পেস/কোড চাইলে মনো করে দিতে পারেন):</b>")
 
-    # 3. Add Note: Step 2 (Content Input with Full Formatting / Mono Support)
     elif current_action == 'waiting_note_content':
         title = state_info.get('note_title')
         now_dt = datetime.datetime.now().strftime("%Y-%m-%d %I:%M %p")
-        run_query("INSERT INTO notes (user_id, title, content, created_at) VALUES (?, ?, ?, ?)", (uid, title, html_formatted_text, now_dt))
+        run_query("INSERT INTO notes (user_id, title, content, created_at) VALUES (?, ?, ?, ?)", (wid, title, html_formatted_text, now_dt))
         del user_states[uid]
         bot.send_message(message.chat.id, f"✅ <b>নোট সফলভাবে সংরক্ষিত হয়েছে!</b>\n📄 শিরোনাম: <b>{title}</b>", reply_markup=main_keyboard(uid))
-        show_notes_menu(message.chat.id, uid)
+        show_notes_menu(message.chat.id, wid, uid=uid)
         return
 
-    # 4. Search Notes
     elif current_action == 'searching_notes':
         del user_states[uid]
         matched_notes = run_query(
             "SELECT id, title FROM notes WHERE user_id=? AND (title ILIKE ? OR content ILIKE ?) ORDER BY id DESC",
-            (uid, f"%{raw_text}%", f"%{raw_text}%"), fetch=True
+            (wid, f"%{raw_text}%", f"%{raw_text}%"), fetch=True
         )
         if not matched_notes:
             return bot.send_message(message.chat.id, f"❌ '<b>{raw_text}</b>' এর সাথে মিলে এমন কোনো নোট পাওয়া যায়নি।", reply_markup=main_keyboard(uid))
@@ -783,18 +835,17 @@ def global_text_input(message):
         bot.send_message(message.chat.id, f"🔍 '<b>{raw_text}</b>' সম্পর্কিত নোটস রেজাল্ট ({len(matched_notes)} টি):", reply_markup=markup)
         return
 
-    # 5. Search Files (Drive Files & Album Search)
     elif current_action == 'searching':
         del user_states[uid]
         files = run_query("SELECT id, file_id, file_name, file_type FROM files WHERE user_id=? AND file_name ILIKE ? ORDER BY id ASC", 
-                          (uid, f"%{raw_text}%"), fetch=True)
+                          (wid, f"%{raw_text}%"), fetch=True)
         if not files:
             return bot.send_message(message.chat.id, f"❌ '<b>{raw_text}</b>' নামে কোনো ফাইল পাওয়া যায়নি।", reply_markup=main_keyboard(uid))
 
         bot.send_message(message.chat.id, f"🔍 '<b>{raw_text}</b>' এর সার্চ রেজাল্ট ({len(files)} টি ফাইল):")
         photos = [{'id': f[0], 'file_id': f[1], 'caption': f"📝 {f[2]}"} for f in files if f[3] == 'photo']
         if photos:
-            send_photos_as_grid(message.chat.id, photos, uid)
+            send_photos_as_grid(message.chat.id, photos, wid)
 
         others = [f for f in files if f[3] != 'photo']
         for f_db_id, fid, fname, ftype in others:
