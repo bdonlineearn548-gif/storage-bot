@@ -16,7 +16,7 @@ from threading import Thread, Timer, Lock
 # ==========================================
 # 1. Configuration (আপনার আগের ক্রেডেনশিয়াল)
 # ==========================================
-BOT_TOKEN = "8725779053:AAGjKKSa5GjPxnCFfK4HJvRfBM18o4ZtSwg"
+BOT_TOKEN = "8725779053:AAEE-eDLIAuGiECIPoMUIIw0tsN9PRA1mKM"
 ADMIN_ID = 6271611009
 LOG_CHANNEL_ID = -1003481796766
 DB_URI = "postgresql://postgres.pofuxngbmbkbsvliqyka:czpH1jl4dGQLD84B@aws-0-ap-northeast-2.pooler.supabase.com:6543/postgres"
