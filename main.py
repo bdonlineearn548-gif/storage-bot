@@ -20,7 +20,7 @@ LOG_CHANNEL_ID = -1003481796766
 
 # আপনার Supabase এর আসল Connection URI টি এখানে দিন
 # Supabase Database URI
-DB_URI = "postgresql://postgres:czpH1jl4dGQLD84B@db.pofuxngbmbkbsvliqyka.supabase.co:5432/postgres"
+DB_URI = "postgresql://postgres.pofuxngbmbkbsvliqyka:czpH1jl4dGQLD84B@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres"
 
 # আপনার Render Web Service এর লাইভ লিংক (যেমন: https://your-app.onrender.com)
 RENDER_APP_URL = os.environ.get("RENDER_EXTERNAL_URL", "")
