@@ -22,9 +22,11 @@ LOG_CHANNEL_ID = -1003481796766
 DB_URI = "postgresql://postgres.pofuxngbmbkbsvliqyka:czpH1jl4dGQLD84B@aws-0-ap-northeast-2.pooler.supabase.com:6543/postgres"
 RENDER_APP_URL = os.environ.get("RENDER_EXTERNAL_URL", "")
 
-bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
+bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML", threaded=True, num_threads=8)
 logging.basicConfig(level=logging.INFO)
 
+# In-Memory Fast Cache (ডাটাবেসের বাড়তি ট্রিপ এড়াতে)
+workspace_cache = {}
 user_states = {}
 media_groups = {}
 
@@ -35,7 +37,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "🤖 Telegram Cloud Drive & Notes Bot is Running 24/7!"
+    return "⚡ High-Speed Telegram Cloud Drive Bot Running!"
 
 def run_web():
     port = int(os.environ.get('PORT', 8080))
@@ -43,18 +45,18 @@ def run_web():
 
 def auto_keep_alive():
     while True:
-        time.sleep(600)
+        time.sleep(300)
         if RENDER_APP_URL:
             try:
                 requests.get(RENDER_APP_URL, timeout=10)
-            except Exception as e:
-                logging.error(f"Keep-alive error: {e}")
+            except Exception:
+                pass
 
 Thread(target=run_web, daemon=True).start()
 Thread(target=auto_keep_alive, daemon=True).start()
 
 # ==========================================
-# 3. Database Setup & Pool
+# 3. Fast Database Pool
 # ==========================================
 db_pool = psycopg2.pool.SimpleConnectionPool(1, 20, DB_URI)
 
@@ -123,14 +125,26 @@ def auto_setup_db():
 
 auto_setup_db()
 
-# --- Workspace Helper: Share Drive Logic ---
+# --- Ultra-Fast Workspace Finder with In-Memory Cache ---
 def get_workspace(uid):
+    if uid in workspace_cache:
+        return workspace_cache[uid]
     res = run_query("SELECT active_workspace FROM user_settings WHERE user_id = ?", (uid,), fetch=True)
     if res:
-        return res[0][0]
+        wid = res[0][0]
     else:
-        run_query("INSERT INTO user_settings (user_id, active_workspace) VALUES (?, ?)", (uid, uid))
-        return uid
+        run_query("INSERT INTO user_settings (user_id, active_workspace) VALUES (?, ?) ON CONFLICT DO NOTHING", (uid, uid))
+        wid = uid
+    workspace_cache[uid] = wid
+    return wid
+
+# Background Logging to avoid blocking user thread
+def background_log(chat_id, message_id):
+    if LOG_CHANNEL_ID:
+        try:
+            bot.copy_message(LOG_CHANNEL_ID, chat_id, message_id)
+        except Exception:
+            pass
 
 # ==========================================
 # 4. Helper: Send Photos in 10-Item Grid
@@ -148,7 +162,7 @@ def send_photos_as_grid(chat_id, photo_list, wid):
             for s_msg, item in zip(sent_msgs, chunk):
                 run_query("UPDATE files SET message_id = ? WHERE id = ?", (s_msg.message_id, item['id']))
         except Exception as e:
-            logging.error(f"Media group error: {e}")
+            logging.error(f"Media group send error: {e}")
 
 # ==========================================
 # 5. Main Keyboard
@@ -164,7 +178,7 @@ def main_keyboard(uid):
     return markup
 
 # ==========================================
-# 6. Basic & Share Commands
+# 6. Basic & Pairing Commands
 # ==========================================
 @bot.message_handler(commands=['start'])
 def start_cmd(message):
@@ -185,17 +199,13 @@ def start_cmd(message):
 
     mention = f"<a href='tg://user?id={uid}'>{html.escape(full_name)}</a>"
     welcome_text = (
-        f"✨ আসসালামু আলাইকুম, {mention}! ✨\n\n"
-        f"🚀 <b>আপনার স্মার্ট ক্লাউড ড্রাইভে স্বাগতম!</b>\n\n"
-        f"📌 <b>কমান্ডস ও রিনেম:</b>\n"
-        f"• নতুন প্লেলিস্ট: <code>/add নাম</code> | মুছতে: <code>/rem</code>\n"
-        f"• <b>অ্যালবাম রিনেম:</b> অ্যালবামের একটি ছবিতে Reply দিয়ে নাম দিন।\n\n"
-        f"👥 <b>ড্রাইভ শেয়ারিং (পার্টনার অ্যাক্সেস):</b>\n"
-        f"• আপনার ড্রাইভ শেয়ার করতে লিখুন: <code>/share</code>\n"
-        f"• অন্যের ড্রাইভে যুক্ত হতে লিখুন: <code>/join কোড</code>\n"
-        f"• শেয়ারিং থেকে বের হতে: <code>/leave</code>\n\n"
-        f"🆔 <b>User ID:</b> <code>{uid}</code>\n"
-        f"📅 <b>Member Since:</b> {date_now}"
+        f"⚡ <b>আসসালামু আলাইকুম, {mention}!</b> ⚡\n\n"
+        f"🚀 <b>আপনার হাই-স্পিড ক্লাউড ড্রাইভ ও নোটস রেডি!</b>\n\n"
+        f"📌 <b>কমান্ডস:</b>\n"
+        f"• নতুন প্লেলিস্ট: <code>/add নাম</code> | ডিলিট: <code>/rem</code>\n"
+        f"• <b>অ্যালবাম রিনেম:</b> অ্যালবামের একটি ছবিতে Reply দিয়ে নতুন নাম দিন।\n"
+        f"• <b>শেয়ারিং:</b> <code>/share</code> কোড তৈরি করতে, যুক্ত হতে <code>/join কোড</code>\n\n"
+        f"👇 নিচের মেনু ব্যবহার করুন:"
     )
 
     try:
@@ -204,7 +214,7 @@ def start_cmd(message):
             bot.send_photo(uid, photos.photos[0][-1].file_id, caption=welcome_text, reply_markup=main_keyboard(uid))
         else:
             bot.send_message(uid, welcome_text, reply_markup=main_keyboard(uid))
-    except:
+    except Exception:
         bot.send_message(uid, welcome_text, reply_markup=main_keyboard(uid))
 
 @bot.message_handler(commands=['share'])
@@ -212,41 +222,42 @@ def share_cmd(message):
     uid = message.from_user.id
     wid = get_workspace(uid)
     if wid != uid:
-        return bot.reply_to(message, "⚠️ আপনি বর্তমানে অন্যের শেয়ার্ড ড্রাইভে যুক্ত আছেন। নিজের ড্রাইভ শেয়ার করতে আগে <code>/leave</code> কমান্ড দিয়ে বের হয়ে আসুন।")
+        return bot.reply_to(message, "⚠️ আপনি বর্তমানে অন্যের শেয়ার্ড ড্রাইভে আছেন। নিজের ড্রাইভ শেয়ার করতে <code>/leave</code> কমান্ড দিন।")
     
     code = f"DRIVE-{random.randint(100000, 999999)}"
     run_query("INSERT INTO invites (code, owner_id) VALUES (?, ?)", (code, uid))
-    bot.reply_to(message, f"🔗 <b>আপনার ড্রাইভ শেয়ারিং কোড:</b>\n\n<code>/join {code}</code>\n\nযাকে আপনার ড্রাইভের অ্যাক্সেস দিতে চান, তাকে উপরের কমান্ডটি কপি করে বটকে পাঠাতে বলুন।")
+    bot.reply_to(message, f"🔗 <b>আপনার ড্রাইভ শেয়ারিং কোড:</b>\n\n<code>/join {code}</code>\n\nযাকে অ্যাক্সেস দিতে চান তাকে এই কোডটি বটে পাঠাতে বলুন।")
 
 @bot.message_handler(commands=['join'])
 def join_cmd(message):
     uid = message.from_user.id
     args = message.text.split()
     if len(args) < 2:
-        return bot.reply_to(message, "⚠️ অনুগ্রহ করে ইনভাইট কোড দিন।\nউদাহরণ: <code>/join DRIVE-123456</code>")
+        return bot.reply_to(message, "⚠️ কোড উল্লেখ করুন। উদাহরণ: <code>/join DRIVE-123456</code>")
     
     code = args[1]
     invite = run_query("SELECT owner_id FROM invites WHERE code = ?", (code,), fetch=True)
     if not invite:
-        return bot.reply_to(message, "❌ ইনভাইট কোডটি ভুল বা মেয়াদোত্তীর্ণ!")
+        return bot.reply_to(message, "❌ কোডটি সঠিক নয় বা মেয়াদ শেষ!")
     
     owner_id = invite[0][0]
     if owner_id == uid:
-        return bot.reply_to(message, "⚠️ এটি আপনার নিজেরই ব্যক্তিগত ড্রাইভ!")
+        return bot.reply_to(message, "⚠️ এটি আপনার নিজেরই ড্রাইভ!")
     
-    get_workspace(uid) # ensure row exists
-    run_query("UPDATE user_settings SET active_workspace = ? WHERE user_id = ?", (owner_id, uid))
-    bot.reply_to(message, "✅ <b>অভিনন্দন! আপনি সফলভাবে শেয়ার্ড ড্রাইভে যুক্ত হয়েছেন।</b>\nএখন থেকে আপনার এবং আপনার পার্টনারের ফাইল, নোটস এবং প্লেলিস্টগুলো একসাথে সিঙ্ক হবে।")
+    workspace_cache[uid] = owner_id
+    run_query("INSERT INTO user_settings (user_id, active_workspace) VALUES (?, ?) ON CONFLICT (user_id) DO UPDATE SET active_workspace = ?", (uid, owner_id, owner_id))
+    bot.reply_to(message, "✅ <b>শেয়ার্ড ড্রাইভে যুক্ত হয়েছেন!</b>\nএখন থেকে দুজনেই একই ড্রাইভ ও ফাইল একসাথে ব্যবহার করতে পারবেন।")
 
 @bot.message_handler(commands=['leave'])
 def leave_cmd(message):
     uid = message.from_user.id
     wid = get_workspace(uid)
     if wid == uid:
-        return bot.reply_to(message, "⚠️ আপনি বর্তমানে কোনো শেয়ার্ড ড্রাইভে যুক্ত নেই। আপনি আপনার পার্সোনাল ড্রাইভেই আছেন।")
+        return bot.reply_to(message, "⚠️ আপনি ইতিমধ্যে নিজের পার্সোনাল ড্রাইভেই আছেন।")
     
+    workspace_cache[uid] = uid
     run_query("UPDATE user_settings SET active_workspace = ? WHERE user_id = ?", (uid, uid))
-    bot.reply_to(message, "✅ আপনি শেয়ার্ড ড্রাইভ থেকে সফলভাবে বের হয়ে নিজের ব্যক্তিগত ড্রাইভে ফিরে এসেছেন।")
+    bot.reply_to(message, "✅ শেয়ার্ড ড্রাইভ থেকে বিচ্ছিন্ন হয়ে নিজের ব্যক্তিগত ড্রাইভে ফিরে এসেছেন।")
 
 @bot.message_handler(commands=['add', 'new'])
 def add_playlist_cmd(message):
@@ -254,15 +265,15 @@ def add_playlist_cmd(message):
     wid = get_workspace(uid)
     args = message.text.split(maxsplit=1)
     if len(args) < 2:
-        return bot.reply_to(message, "⚠️ প্লেলিস্টের নাম দিন।\nউদাহরণ: <code>/add My Tour</code>")
+        return bot.reply_to(message, "⚠️ নাম উল্লেখ করুন। উদাহরণ: <code>/add My Tour</code>")
     
     pl_name = args[1].strip()
     exist = run_query("SELECT id FROM playlists WHERE user_id=? AND playlist_name=?", (wid, pl_name), fetch=True)
     if exist:
-        return bot.reply_to(message, "⚠️ এই নামের প্লেলিস্ট ইতিমধ্যে তৈরি করা আছে!")
+        return bot.reply_to(message, "⚠️ এই নামের প্লেলিস্ট ইতিমধ্যে রয়েছে!")
     
     run_query("INSERT INTO playlists (user_id, playlist_name) VALUES (?, ?)", (wid, pl_name))
-    bot.reply_to(message, f"✅ <b>{pl_name}</b> প্লেলিস্টটি সফলভাবে তৈরি হয়েছে!")
+    bot.reply_to(message, f"✅ <b>{pl_name}</b> প্লেলিস্ট তৈরি হয়েছে!")
 
 @bot.message_handler(commands=['rem', 'remove'])
 def remove_playlist_cmd(message):
@@ -270,12 +281,12 @@ def remove_playlist_cmd(message):
     wid = get_workspace(uid)
     pls = run_query("SELECT playlist_name FROM playlists WHERE user_id = ?", (wid,), fetch=True)
     if not pls:
-        return bot.send_message(message.chat.id, "❌ কোনো প্লেলিস্ট নেই।")
+        return bot.send_message(message.chat.id, "❌ আপনার কোনো প্লেলিস্ট নেই।")
     
     markup = types.InlineKeyboardMarkup(row_width=2)
     for p in pls:
         markup.add(types.InlineKeyboardButton(f"🗑 {p[0]}", callback_data=f"ask_del_pl|{p[0]}"))
-    bot.send_message(message.chat.id, "🗑 <b>কোন প্লেলিস্টটি ডিলিট করতে চান? নির্বাচন করুন:</b>", reply_markup=markup)
+    bot.send_message(message.chat.id, "🗑 <b>কোন প্লেলিস্টটি ডিলিট করতে চান?</b>", reply_markup=markup)
 
 # ==========================================
 # 7. Menu Controller
@@ -289,7 +300,7 @@ def menu_controller(message):
     if text == "📁 প্লেলিস্টসমূহ":
         pls = run_query("SELECT playlist_name FROM playlists WHERE user_id = ?", (wid,), fetch=True)
         if not pls:
-            return bot.send_message(message.chat.id, "❌ কোনো প্লেলিস্ট নেই। তৈরি করতে <code>/add নাম</code> কমান্ড ব্যবহার করুন।")
+            return bot.send_message(message.chat.id, "❌ কোনো প্লেলিস্ট নেই। <code>/add নাম</code> দিয়ে তৈরি করুন।")
         markup = types.InlineKeyboardMarkup(row_width=2)
         for p in pls:
             markup.add(types.InlineKeyboardButton(f"📂 {p[0]}", callback_data=f"choose_type|{p[0]}|{wid}"))
@@ -306,7 +317,7 @@ def menu_controller(message):
         markup = types.InlineKeyboardMarkup(row_width=1)
         res_text = "🗓 <b>আপলোড হিস্ট্রি:</b>\n\n"
         for d, count in dates:
-            res_text += f"• <b>{d}</b> তারিখে আপলোড হয়েছে: <b>{count}</b> টি ফাইল\n"
+            res_text += f"• <b>{d}</b>: <b>{count}</b> টি ফাইল\n"
             markup.add(types.InlineKeyboardButton(f"📅 {d} ({count} টি ফাইল দেখুন)", callback_data=f"view_date|{d}"))
         bot.send_message(message.chat.id, res_text, reply_markup=markup)
 
@@ -315,10 +326,14 @@ def menu_controller(message):
         bot.send_message(message.chat.id, "🔎 ফাইলের নাম বা ক্যাপশন লিখে পাঠান:")
 
     elif text == "📊 ড্রাইভ ড্যাশবোর্ড":
-        p_count = run_query("SELECT COUNT(id) FROM files WHERE user_id=? AND file_type='photo'", (wid,), fetch=True)[0][0]
-        v_count = run_query("SELECT COUNT(id) FROM files WHERE user_id=? AND file_type='video'", (wid,), fetch=True)[0][0]
-        d_count = run_query("SELECT COUNT(id) FROM files WHERE user_id=? AND file_type='document'", (wid,), fetch=True)[0][0]
-        a_count = run_query("SELECT COUNT(id) FROM files WHERE user_id=? AND file_type IN ('audio', 'voice')", (wid,), fetch=True)[0][0]
+        # ১টি মাত্র অপটিমাইজড কুয়েরিতে সব হিসেব আনা
+        counts = run_query("SELECT file_type, COUNT(id) FROM files WHERE user_id=? GROUP BY file_type", (wid,), fetch=True) or []
+        count_dict = {row[0]: row[1] for row in counts}
+        
+        p_count = count_dict.get('photo', 0)
+        v_count = count_dict.get('video', 0)
+        d_count = count_dict.get('document', 0)
+        a_count = count_dict.get('audio', 0) + count_dict.get('voice', 0)
         n_count = run_query("SELECT COUNT(id) FROM notes WHERE user_id=?", (wid,), fetch=True)[0][0]
 
         stat_msg = (
@@ -337,11 +352,10 @@ def menu_controller(message):
     elif text == "ℹ️ Help":
         help_msg = (
             "❓ <b>ব্যবহার নির্দেশিকা:</b>\n\n"
-            "• প্লেলিস্ট তৈরি: <code>/add নাম</code> | মুছতে: <code>/rem</code>\n"
-            "• <b>শেয়ারিং:</b> <code>/share</code> লিখে কোড নিন এবং অন্যকে <code>/join</code> করতে দিন।\n"
-            "• <b>অ্যালবাম রিনেম:</b> অ্যালবামের একটি ছবিতে Reply দিয়ে নাম দিলে পুরো অ্যালবামের নাম সেট হবে।\n"
-            "• <b>মিডিয়া রিপ্লেস:</b> ফাইলে Reply দিয়ে নতুন ফাইল পাঠান।\n"
-            "• <b>নোটস:</b> '📝 নোটস' মেনু থেকে মনো/ফরম্যাটেড টেক্সট সংরক্ষণ করুন।"
+            "• প্লেলিস্ট: <code>/add নাম</code> | মুছতে: <code>/rem</code>\n"
+            "• <b>শেয়ারিং:</b> <code>/share</code> কোড দিয়ে অন্যকে <code>/join</code> করতে দিন।\n"
+            "• <b>অ্যালবাম রিনেম:</b> ছবির মেসেজে Reply দিয়ে নাম পাঠালে সম্পূর্ণ অ্যালবাম রিনেম হবে।\n"
+            "• <b>মিডিয়া রিপ্লেস:</b> ফাইলে Reply দিয়ে নতুন ফাইল পাঠান।"
         )
         markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("📩 Admin Inbox", url="https://t.me/rm_rasel_hossain"))
         bot.send_message(message.chat.id, help_msg, reply_markup=markup)
@@ -363,12 +377,12 @@ def show_notes_menu(chat_id, wid, message_id=None, uid=None):
     markup.row(types.InlineKeyboardButton("➕ নতুন নোট যোগ করুন", callback_data="btn_add_note"),
                types.InlineKeyboardButton("🔍 সার্চ নোট", callback_data="btn_search_note"))
     
-    text = "📝 <b>আপনার সংরক্ষিত নোটস সমূহ:</b>\n\nকোনো নোটের বিস্তারিত পড়তে নিচের শিরোনামে ক্লিক করুন:" if notes else "📝 <b>আপনার কোনো নোট সংরক্ষিত নেই।</b>\nনিচের বাটনে চাপ দিয়ে নতুন নোট যোগ করুন:"
+    text = "📝 <b>আপনার সংরক্ষিত নোটস সমূহ:</b>\n\nনোট পড়তে নিচের শিরোনামে ক্লিক করুন:" if notes else "📝 <b>আপনার কোনো নোট সংরক্ষিত নেই।</b>"
     
     if message_id:
         try:
             bot.edit_message_text(text, chat_id, message_id, reply_markup=markup)
-        except:
+        except Exception:
             bot.send_message(chat_id, text, reply_markup=markup)
     else:
         bot.send_message(chat_id, text, reply_markup=markup)
@@ -384,14 +398,13 @@ def show_admin_panel(chat_id, message_id=None):
     text = (
         f"⚙️ <b>অ্যাডমিন কন্ট্রোল ড্যাশবোর্ড</b>\n"
         f"═══════════════════════\n"
-        f"👥 মোট রেজিস্টার্ড ইউজার: <b>{total_users}</b> জন\n"
-        f"📂 মোট সংরক্ষিত ফাইল: <b>{total_files}</b> টি\n"
-        f"📝 মোট তৈরি করা নোট: <b>{total_notes}</b> টি\n"
-        f"═══════════════════════\n"
-        f"👇 ইউজারদের তথ্য ও ড্রাইভ দেখতে নিচের বাটনে চাপুন:"
+        f"👥 রেজিস্টার্ড ইউজার: <b>{total_users}</b> জন\n"
+        f"📂 সংরক্ষিত ফাইল: <b>{total_files}</b> টি\n"
+        f"📝 তৈরি করা নোট: <b>{total_notes}</b> টি\n"
+        f"═══════════════════════"
     )
     markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("👥 ইউজার তালিকা ও ফাইলসমূহ দেখুন", callback_data="adm_list_users|0"))
+    markup.add(types.InlineKeyboardButton("👥 ইউজারদের ড্রাইভ ব্রাউজ করুন", callback_data="adm_list_users|0"))
     
     if message_id:
         bot.edit_message_text(text, chat_id, message_id, reply_markup=markup)
@@ -416,14 +429,13 @@ def process_media_batch(uid, chat_id):
     wid = get_workspace(uid)
     pls = run_query("SELECT playlist_name FROM playlists WHERE user_id = ?", (wid,), fetch=True)
     if not pls:
-        return bot.send_message(chat_id, "⚠️ আপনার কোনো প্লেলিস্ট নেই! প্রথমে <code>/add প্লেলিস্টের_নাম</code> লিখে তৈরি করুন।")
+        return bot.send_message(chat_id, "⚠️ কোনো প্লেলিস্ট নেই! <code>/add প্লেলিস্টের_নাম</code> লিখে তৈরি করুন।")
 
     markup = types.InlineKeyboardMarkup(row_width=2)
     for p in pls:
         markup.add(types.InlineKeyboardButton(f"📁 {p[0]}", callback_data=f"save_batch_to|{p[0]}"))
 
-    count = len(files_to_save)
-    bot.send_message(chat_id, f"📥 <b>{count} টি ফাইল ডিটেক্ট করা হয়েছে!</b>\nকোন প্লেলিস্টে সেভ করতে চান?", reply_markup=markup)
+    bot.send_message(chat_id, f"📥 <b>{len(files_to_save)} টি ফাইল রেডি!</b>\nকোন প্লেলিস্টে সেভ করবেন?", reply_markup=markup)
 
 # ==========================================
 # 11. Callback Manager
@@ -439,10 +451,10 @@ def callback_manager(call):
         pl_name = data[1]
         markup = types.InlineKeyboardMarkup(row_width=2)
         markup.add(
-            types.InlineKeyboardButton("✅ হ্যাঁ, ডিলিট করুন", callback_data=f"confirm_del_pl|{pl_name}"),
+            types.InlineKeyboardButton("✅ হ্যাঁ, ডিলিট", callback_data=f"confirm_del_pl|{pl_name}"),
             types.InlineKeyboardButton("❌ বাতিল", callback_data="cancel_del")
         )
-        bot.edit_message_text(f"⚠️ আপনি কি নিশ্চিত যে <b>{pl_name}</b> প্লেলিস্ট ও এর সব ফাইল মুছে ফেলবেন?", 
+        bot.edit_message_text(f"⚠️ আপনি কি নিশ্চিত যে <b>{pl_name}</b> প্লেলিস্টটি মুছে ফেলবেন?", 
                               call.message.chat.id, call.message.message_id, reply_markup=markup)
 
     elif action == "confirm_del_pl":
@@ -458,7 +470,7 @@ def callback_manager(call):
         pl_name = data[1]
         f_state = user_states.get(uid)
         if not f_state or 'file_batch' not in f_state:
-            return bot.answer_callback_query(call.id, "⚠️ সেশন পাওয়া যায়নি।")
+            return bot.answer_callback_query(call.id, "⚠️ সেশন শেষ।")
 
         batch = f_state['file_batch']
         today = datetime.datetime.now().strftime("%Y-%m-%d")
@@ -545,7 +557,7 @@ def callback_manager(call):
 
     elif action == "btn_search_note":
         user_states[uid] = {'action': 'searching_notes'}
-        bot.send_message(call.message.chat.id, "🔍 <b>নোট সার্চ:</b> শিরোনাম বা লেখার যেকোনো অংশ লিখে পাঠান:")
+        bot.send_message(call.message.chat.id, "🔍 <b>নোট সার্চ:</b> শিরোনাম বা লেখার অংশ লিখে পাঠান:")
 
     elif action == "read_note":
         n_id = int(data[1])
@@ -573,10 +585,10 @@ def callback_manager(call):
         n_id = int(data[1])
         markup = types.InlineKeyboardMarkup(row_width=2)
         markup.add(
-            types.InlineKeyboardButton("✅ হ্যাঁ, ডিলিট করুন", callback_data=f"confirm_del_note|{n_id}"),
+            types.InlineKeyboardButton("✅ হ্যাঁ, ডিলিট", callback_data=f"confirm_del_note|{n_id}"),
             types.InlineKeyboardButton("❌ বাতিল", callback_data=f"read_note|{n_id}")
         )
-        bot.edit_message_text("⚠️ <b>আপনি কি নিশ্চিত যে এই নোটটি চিরতরে ডিলিট করতে চান?</b>",
+        bot.edit_message_text("⚠️ <b>আপনি কি নিশ্চিত যে এই নোটটি মুছে ফেলবেন?</b>",
                               call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="HTML")
 
     elif action == "confirm_del_note":
@@ -596,7 +608,7 @@ def callback_manager(call):
             return bot.answer_callback_query(call.id, "❌ কোনো ফাইল নেই!")
 
         bot.answer_callback_query(call.id, f"{sel_date} এর ফাইল ওপেন হচ্ছে...")
-        bot.send_message(call.message.chat.id, f"📅 <b>{sel_date}</b> তারিখে আপলোডকৃত ফাইলসমূহ:")
+        bot.send_message(call.message.chat.id, f"📅 <b>{sel_date}</b> এর ফাইলসমূহ:")
 
         photos = [{'id': f[0], 'file_id': f[1], 'caption': f"📝 {f[2]}"} for f in files if f[3] == 'photo']
         if photos:
@@ -628,23 +640,15 @@ def callback_manager(call):
             return bot.answer_callback_query(call.id, "ইউজার পাওয়া যায়নি!")
         
         name, uname, jdate = u_info[0]
-        p_count = run_query("SELECT COUNT(id) FROM files WHERE user_id=? AND file_type='photo'", (target_uid,), fetch=True)[0][0]
-        v_count = run_query("SELECT COUNT(id) FROM files WHERE user_id=? AND file_type='video'", (target_uid,), fetch=True)[0][0]
-        d_count = run_query("SELECT COUNT(id) FROM files WHERE user_id=? AND file_type='document'", (target_uid,), fetch=True)[0][0]
-        a_count = run_query("SELECT COUNT(id) FROM files WHERE user_id=? AND file_type IN ('audio', 'voice')", (target_uid,), fetch=True)[0][0]
-        pl_count = run_query("SELECT COUNT(id) FROM playlists WHERE user_id=?", (target_uid,), fetch=True)[0][0]
-        notes_count = run_query("SELECT COUNT(id) FROM notes WHERE user_id=?", (target_uid,), fetch=True)[0][0]
-
+        counts = run_query("SELECT file_type, COUNT(id) FROM files WHERE user_id=? GROUP BY file_type", (target_uid,), fetch=True) or []
+        count_dict = {row[0]: row[1] for row in counts}
+        
         detail_text = (
-            f"👤 <b>ইউজার প্রোফাইল ও প্রপার্টি</b>\n"
+            f"👤 <b>ইউজার প্রোফাইল</b>\n"
             f"═══════════════════════\n"
-            f"• <b>নাম:</b> {name}\n"
-            f"• <b>ইউজারনেম:</b> @{uname}\n"
-            f"• <b>ইউজার আইডি:</b> <code>{target_uid}</code>\n"
-            f"• <b>জয়েনিং তারিখ:</b> {jdate}\n\n"
-            f"📊 <b>পরিসংখ্যান:</b>\n"
-            f"• প্লেলিস্ট: <b>{pl_count}</b> টি | নোটস: <b>{notes_count}</b> টি\n"
-            f"• ছবি: <b>{p_count}</b> টি | ভিডিও: <b>{v_count}</b> টি | ডকুমেন্ট: <b>{d_count}</b> টি\n"
+            f"• <b>নাম:</b> {name} (@{uname})\n"
+            f"• <b>আইডি:</b> <code>{target_uid}</code>\n"
+            f"• ছবি: <b>{count_dict.get('photo', 0)}</b> | ভিডিও: <b>{count_dict.get('video', 0)}</b> | ডকুমেন্ট: <b>{count_dict.get('document', 0)}</b>\n"
             f"═══════════════════════"
         )
         markup = types.InlineKeyboardMarkup()
@@ -659,8 +663,8 @@ def callback_manager(call):
         if pls:
             for p in pls:
                 markup.add(types.InlineKeyboardButton(f"📂 {p[0]}", callback_data=f"choose_type|{p[0]}|{target_uid}"))
-        markup.add(types.InlineKeyboardButton("🔙 ইউজারের তথ্যে ফিরুন", callback_data=f"adm_user_detail|{target_uid}"))
-        bot.edit_message_text(f"📁 <b>ইউজারের সংরক্ষিত প্লেলিস্টসমূহ:</b>", call.message.chat.id, call.message.message_id, reply_markup=markup)
+        markup.add(types.InlineKeyboardButton("🔙 ব্যাকে যান", callback_data=f"adm_user_detail|{target_uid}"))
+        bot.edit_message_text(f"📁 <b>সংরক্ষিত প্লেলিস্টসমূহ:</b>", call.message.chat.id, call.message.message_id, reply_markup=markup)
 
     elif action == "adm_back_dash" and uid == ADMIN_ID:
         show_admin_panel(call.message.chat.id, call.message.message_id)
@@ -693,23 +697,11 @@ def handle_incoming_media(message):
         f_unique_id = getattr(message.audio or message.voice, 'file_unique_id', None)
         f_name = message.caption or (message.audio.file_name if f_type == 'audio' and message.audio.file_name else "Audio")
 
+    # Fast Media Replace via Reply
     if message.reply_to_message:
         replied = message.reply_to_message
-        target_fuid = None
-        target_fid = None
-
-        if replied.photo:
-            target_fid = replied.photo[-1].file_id
-            target_fuid = replied.photo[-1].file_unique_id
-        elif replied.video:
-            target_fid = replied.video.file_id
-            target_fuid = replied.video.file_unique_id
-        elif replied.document:
-            target_fid = replied.document.file_id
-            target_fuid = replied.document.file_unique_id
-        elif replied.audio:
-            target_fid = replied.audio.file_id
-            target_fuid = replied.audio.file_unique_id
+        target_fuid = getattr(replied.photo[-1] if replied.photo else (replied.video or replied.document or replied.audio), 'file_unique_id', None)
+        target_fid = getattr(replied.photo[-1] if replied.photo else (replied.video or replied.document or replied.audio), 'file_id', None)
 
         matched = None
         if target_fuid:
@@ -725,13 +717,10 @@ def handle_incoming_media(message):
                 "UPDATE files SET file_type=?, file_id=?, file_unique_id=?, file_name=? WHERE id=?",
                 (f_type, f_id, f_unique_id, f_name, db_file_id)
             )
-            return bot.reply_to(message, f"🔄 <b>মিডিয়াটি সফলভাবে Replace করা হয়েছে!</b>\n📝 নতুন নাম/ক্যাপশন: <b>{f_name}</b>")
+            return bot.reply_to(message, f"🔄 <b>সফলভাবে Replace হয়েছে!</b>\n📝 নতুন নাম: <b>{f_name}</b>")
 
-    if LOG_CHANNEL_ID:
-        try:
-            bot.copy_message(LOG_CHANNEL_ID, message.chat.id, message.message_id)
-        except:
-            pass
+    # Async background log copy (ইউজারকে এক সেকেন্ডও আটকে রাখবে না)
+    Thread(target=background_log, args=(message.chat.id, message.message_id), daemon=True).start()
 
     file_item = {'type': f_type, 'id': f_id, 'unique_id': f_unique_id, 'name': f_name, 'media_group_id': media_grp_id}
 
@@ -743,7 +732,7 @@ def handle_incoming_media(message):
     if media_groups[uid]['timer']:
         media_groups[uid]['timer'].cancel()
 
-    media_groups[uid]['timer'] = Timer(1.2, process_media_batch, args=[uid, message.chat.id])
+    media_groups[uid]['timer'] = Timer(1.0, process_media_batch, args=[uid, message.chat.id])
     media_groups[uid]['timer'].start()
 
 # ==========================================
@@ -762,22 +751,10 @@ def global_text_input(message):
         active_note = user_states.get(uid, {}).get('active_reading_note_id')
         if active_note and user_states.get(uid, {}).get('msg_id') == replied.message_id:
             run_query("UPDATE notes SET content = ? WHERE id = ? AND user_id = ?", (html_formatted_text, active_note, wid))
-            return bot.reply_to(message, "✅ <b>নোটের কনটেন্ট সফলভাবে Replace / Update করা হয়েছে!</b>")
+            return bot.reply_to(message, "✅ <b>নোটের কনটেন্ট সফলভাবে Replace / Update হয়েছে!</b>")
 
-        target_fid = None
-        target_fuid = None
-        if replied.photo:
-            target_fid = replied.photo[-1].file_id
-            target_fuid = replied.photo[-1].file_unique_id
-        elif replied.video:
-            target_fid = replied.video.file_id
-            target_fuid = replied.video.file_unique_id
-        elif replied.document:
-            target_fid = replied.document.file_id
-            target_fuid = replied.document.file_unique_id
-        elif replied.audio:
-            target_fid = replied.audio.file_id
-            target_fuid = replied.audio.file_unique_id
+        target_fuid = getattr(replied.photo[-1] if replied.photo else (replied.video or replied.document or replied.audio), 'file_unique_id', None)
+        target_fid = getattr(replied.photo[-1] if replied.photo else (replied.video or replied.document or replied.audio), 'file_id', None)
 
         matched = None
         if target_fuid:
@@ -791,14 +768,14 @@ def global_text_input(message):
             f_db_id, grp_id = matched[0]
             if grp_id:
                 run_query("UPDATE files SET file_name = ? WHERE user_id = ? AND media_group_id = ?", (raw_text, wid, grp_id))
-                return bot.reply_to(message, f"✅ <b>সম্পূর্ণ অ্যালবামের নাম সফলভাবে সেট করা হয়েছে!</b>\n📝 অ্যালবামের নাম: <b>{raw_text}</b>")
+                return bot.reply_to(message, f"✅ <b>সম্পূর্ণ অ্যালবামের নাম সফলভাবে সেট করা হয়েছে!</b>\n📝 নাম: <b>{raw_text}</b>")
             else:
                 run_query("UPDATE files SET file_name = ? WHERE id = ?", (raw_text, f_db_id))
                 try:
                     bot.edit_message_caption(chat_id=message.chat.id, message_id=replied.message_id, caption=f"📝 <b>{raw_text}</b>", parse_mode="HTML")
-                except:
+                except Exception:
                     pass
-                return bot.reply_to(message, f"✅ ফাইলের নাম সফলভাবে <b>Replace</b> হয়েছে:\n📝 <b>{raw_text}</b>")
+                return bot.reply_to(message, f"✅ ফাইলের নাম <b>Replace</b> হয়েছে:\n📝 <b>{raw_text}</b>")
 
     state_info = user_states.get(uid, {})
     current_action = state_info.get('action')
@@ -808,14 +785,14 @@ def global_text_input(message):
             'action': 'waiting_note_content',
             'note_title': raw_text
         }
-        return bot.send_message(message.chat.id, f"📌 শিরোনাম: <b>{raw_text}</b>\n\n✍️ <b>এবার নোটের বিস্তারিত বিষয়/লেখাটি পাঠান (মনোস্পেস/কোড চাইলে মনো করে দিতে পারেন):</b>")
+        return bot.send_message(message.chat.id, f"📌 শিরোনাম: <b>{raw_text}</b>\n\n✍️ <b>এবার বিস্তারিত লেখা পাঠান (মনোস্পেস করতে পারেন):</b>")
 
     elif current_action == 'waiting_note_content':
         title = state_info.get('note_title')
         now_dt = datetime.datetime.now().strftime("%Y-%m-%d %I:%M %p")
         run_query("INSERT INTO notes (user_id, title, content, created_at) VALUES (?, ?, ?, ?)", (wid, title, html_formatted_text, now_dt))
         del user_states[uid]
-        bot.send_message(message.chat.id, f"✅ <b>নোট সফলভাবে সংরক্ষিত হয়েছে!</b>\n📄 শিরোনাম: <b>{title}</b>", reply_markup=main_keyboard(uid))
+        bot.send_message(message.chat.id, f"✅ <b>নোট সংরক্ষিত হয়েছে!</b>\n📄 শিরোনাম: <b>{title}</b>", reply_markup=main_keyboard(uid))
         show_notes_menu(message.chat.id, wid, uid=uid)
         return
 
@@ -826,13 +803,13 @@ def global_text_input(message):
             (wid, f"%{raw_text}%", f"%{raw_text}%"), fetch=True
         )
         if not matched_notes:
-            return bot.send_message(message.chat.id, f"❌ '<b>{raw_text}</b>' এর সাথে মিলে এমন কোনো নোট পাওয়া যায়নি।", reply_markup=main_keyboard(uid))
+            return bot.send_message(message.chat.id, f"❌ '<b>{raw_text}</b>' এর কোনো নোট পাওয়া যায়নি।", reply_markup=main_keyboard(uid))
         
         markup = types.InlineKeyboardMarkup(row_width=1)
         for n_id, n_title in matched_notes:
             markup.add(types.InlineKeyboardButton(f"📄 {n_title}", callback_data=f"read_note|{n_id}"))
         markup.add(types.InlineKeyboardButton("🔙 নোটস মেনু", callback_data="back_notes_list"))
-        bot.send_message(message.chat.id, f"🔍 '<b>{raw_text}</b>' সম্পর্কিত নোটস রেজাল্ট ({len(matched_notes)} টি):", reply_markup=markup)
+        bot.send_message(message.chat.id, f"🔍 '<b>{raw_text}</b>' এর নোটস রেজাল্ট ({len(matched_notes)} টি):", reply_markup=markup)
         return
 
     elif current_action == 'searching':
@@ -859,5 +836,13 @@ def global_text_input(message):
             run_query("UPDATE files SET message_id = ? WHERE id = ?", (s.message_id, f_db_id))
         return
 
+# ==========================================
+# 14. Polling with Auto-Webhook Cleanup
+# ==========================================
 if __name__ == "__main__":
-    bot.infinity_polling()
+    try:
+        bot.remove_webhook()
+        time.sleep(1)
+    except Exception:
+        pass
+    bot.infinity_polling(skip_pending=True)
