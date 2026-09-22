@@ -170,8 +170,8 @@ def start_cmd(message):
         f"• নতুন প্লেলিস্ট: <code>/add প্লেলিস্টের নাম</code>\n"
         f"• প্লেলিস্ট মুছতে: <code>/rem</code>\n\n"
         f"🔄 <b>রিপ্লেস সিস্টেম:</b>\n"
-        f"• যেকোনো ফটো/ভিডিওর ওপর <b>Reply</b> দিয়ে নতুন ফটো/ভিডিও পাঠালে তা সরাসরি <b>Replace</b> হয়ে যাবে!\n"
-        f"• শুধুমাত্র টেক্সট পাঠালে ফাইলের নাম/ক্যাপশন Replace হবে।\n\n"
+        f"• যেকোনো ফটো/ভিডিওতে <b>Reply</b> দিয়ে নতুন ফাইল পাঠালে তা সরাসরি <b>Replace</b> হয়ে যাবে!\n"
+        f"• টেক্সট পাঠালে ফাইলের নাম/ক্যাপশন Replace হবে।\n\n"
         f"📝 <b>নোটস অপশন:</b> নিচের <b>📝 নোটস</b> বাটন চাপুন।\n\n"
         f"🆔 <b>User ID:</b> <code>{uid}</code>\n"
         f"📅 <b>Member Since:</b> {date_now}"
@@ -273,10 +273,10 @@ def menu_controller(message):
         help_msg = (
             "❓ <b>ব্যবহার নির্দেশিকা:</b>\n\n"
             "• নতুন প্লেলিস্ট: <code>/add প্লেলিস্টের নাম</code>\n"
-            "• প্লেলিস্ট রিমুভ: <code>/rem</code>\n"
-            "• <b>মিডিয়া রিপ্লেস:</b> যে ফাইলটি বদলাতে চান সেটিতে Reply দিয়ে নতুন ফাইল পাঠান।\n"
+            "• প্লেলিস্ট মুছতে: <code>/rem</code>\n"
+            "• <b>মিডিয়া রিপ্লেস:</b> যে ফাইলটি বদলাবেন সেটিতে Reply দিয়ে নতুন ফাইল পাঠান।\n"
             "• <b>ক্যাপশন বদলানো:</b> যে ফাইলে ক্যাপশন বদলাবেন সেটিতে Reply দিয়ে নতুন নাম পাঠান।\n"
-            "• <b>নোটস:</b> '📝 নোটস' মেনু থেকে শিরোনামসহ যেকোনো প্রয়োজনীয় টেক্সট সেভ বা সার্চ করতে পারবেন।"
+            "• <b>নোটস:</b> '📝 নোটস' মেনু থেকে শিরোনামসহ যেকোনো ফরম্যাটেড/মনো টেক্সট সংরক্ষণ করতে পারবেন।"
         )
         markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("📩 Admin Inbox", url="https://t.me/rm_rasel_hossain"))
         bot.send_message(message.chat.id, help_msg, reply_markup=markup)
@@ -492,26 +492,37 @@ def callback_manager(call):
             return bot.answer_callback_query(call.id, "❌ নোটটি পাওয়া যায়নি!")
         
         title, content, dt = note[0]
+        # Clean View without extra replacement footer message
         msg = (
             f"📌 <b>{title}</b>\n"
             f"📅 <i>{dt}</i>\n"
             f"──────────────────\n"
             f"{content}\n"
-            f"──────────────────\n"
-            f"💡 <i>নোটের লেখা Replace/Edit করতে এই মেসেজে Reply দিয়ে নতুন লেখাটি পাঠিয়ে দিন।</i>"
+            f"──────────────────"
         )
         markup = types.InlineKeyboardMarkup()
         markup.add(
-            types.InlineKeyboardButton("🗑 নোট ডিলিট", callback_data=f"del_note|{n_id}"),
+            types.InlineKeyboardButton("🗑 নোট ডিলিট", callback_data=f"ask_del_note|{n_id}"),
             types.InlineKeyboardButton("🔙 নোটস লিস্ট", callback_data="back_notes_list")
         )
-        sent = bot.send_message(call.message.chat.id, msg, reply_markup=markup)
+        sent = bot.send_message(call.message.chat.id, msg, reply_markup=markup, parse_mode="HTML")
         user_states[uid] = {'active_reading_note_id': n_id, 'msg_id': sent.message_id}
 
-    elif action == "del_note":
+    # Delete Note Confirmation Dialog
+    elif action == "ask_del_note":
+        n_id = int(data[1])
+        markup = types.InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            types.InlineKeyboardButton("✅ হ্যাঁ, ডিলিট করুন", callback_data=f"confirm_del_note|{n_id}"),
+            types.InlineKeyboardButton("❌ বাতিল", callback_data=f"read_note|{n_id}")
+        )
+        bot.edit_message_text("⚠️ <b>আপনি কি নিশ্চিত যে এই নোটটি চিরতরে ডিলিট করতে চান?</b>",
+                              call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="HTML")
+
+    elif action == "confirm_del_note":
         n_id = int(data[1])
         run_query("DELETE FROM notes WHERE id=? AND user_id=?", (n_id, uid))
-        bot.answer_callback_query(call.id, "🗑 নোটটি সফলভাবে ডিলিট করা হয়েছে!")
+        bot.answer_callback_query(call.id, "🗑 নোটটি মুছে ফেলা হয়েছে!")
         show_notes_menu(call.message.chat.id, uid, call.message.message_id)
 
     elif action == "back_notes_list":
@@ -622,7 +633,7 @@ def handle_incoming_media(message):
         f_unique_id = getattr(message.audio or message.voice, 'file_unique_id', None)
         f_name = message.caption or (message.audio.file_name if f_type == 'audio' and message.audio.file_name else "Audio")
 
-    # --- Media Replace via Reply ---
+    # Media Replace via Reply
     if message.reply_to_message:
         replied = message.reply_to_message
         target_fuid = None
@@ -657,7 +668,6 @@ def handle_incoming_media(message):
             )
             return bot.reply_to(message, f"🔄 <b>মিডিয়াটি সফলভাবে Replace করা হয়েছে!</b>\n📝 নতুন নাম/ক্যাপশন: <b>{f_name}</b>")
 
-    # Regular Upload Logging
     if LOG_CHANNEL_ID:
         try:
             bot.copy_message(LOG_CHANNEL_ID, message.chat.id, message.message_id)
@@ -678,24 +688,26 @@ def handle_incoming_media(message):
     media_groups[uid]['timer'].start()
 
 # ==========================================
-# 13. Global Text Handler (Caption Replace, Notes & Search)
+# 13. Global Text Handler (Formatting/Mono, Caption Replace, Notes & Search)
 # ==========================================
 @bot.message_handler(func=lambda m: True, content_types=['text'])
 def global_text_input(message):
     uid = message.from_user.id
-    text = message.text.strip()
+    raw_text = message.text.strip()
+    # Preserves telegram HTML markup (monospace, bold, code)
+    html_formatted_text = getattr(message, 'html_text', raw_text)
 
-    # 1. Reply দিয়ে Caption Replace অথবা Note Content Replace
+    # 1. Reply to Replace Caption or Note Content
     if message.reply_to_message:
         replied = message.reply_to_message
         
-        # ক) Note Content Replace
+        # Note Content Replace with exact formatting/monospace
         active_note = user_states.get(uid, {}).get('active_reading_note_id')
         if active_note and user_states.get(uid, {}).get('msg_id') == replied.message_id:
-            run_query("UPDATE notes SET content = ? WHERE id = ? AND user_id = ?", (text, active_note, uid))
+            run_query("UPDATE notes SET content = ? WHERE id = ? AND user_id = ?", (html_formatted_text, active_note, uid))
             return bot.reply_to(message, "✅ <b>নোটের কনটেন্ট সফলভাবে Replace / Update করা হয়েছে!</b>")
 
-        # খ) Media Caption Replace
+        # Media Caption Replace
         target_fid = None
         target_fuid = None
         if replied.photo:
@@ -721,12 +733,12 @@ def global_text_input(message):
 
         if matched:
             f_db_id = matched[0][0]
-            run_query("UPDATE files SET file_name = ? WHERE id = ?", (text, f_db_id))
+            run_query("UPDATE files SET file_name = ? WHERE id = ?", (raw_text, f_db_id))
             try:
-                bot.edit_message_caption(chat_id=message.chat.id, message_id=replied.message_id, caption=f"📝 <b>{text}</b>", parse_mode="HTML")
+                bot.edit_message_caption(chat_id=message.chat.id, message_id=replied.message_id, caption=f"📝 <b>{raw_text}</b>", parse_mode="HTML")
             except:
                 pass
-            return bot.reply_to(message, f"✅ ফাইলের নাম/ক্যাপশন সফলভাবে <b>Replace</b> হয়েছে:\n📝 <b>{text}</b>")
+            return bot.reply_to(message, f"✅ ফাইলের নাম/ক্যাপশন সফলভাবে <b>Replace</b> হয়েছে:\n📝 <b>{raw_text}</b>")
 
     state_info = user_states.get(uid, {})
     current_action = state_info.get('action')
@@ -735,46 +747,47 @@ def global_text_input(message):
     if current_action == 'waiting_note_title':
         user_states[uid] = {
             'action': 'waiting_note_content',
-            'note_title': text
+            'note_title': raw_text
         }
-        return bot.send_message(message.chat.id, f"📌 শিরোনাম: <b>{text}</b>\n\n✍️ <b>এবার নোটের বিস্তারিত বিষয়/লেখাটি পাঠান:</b>")
+        return bot.send_message(message.chat.id, f"📌 শিরোনাম: <b>{raw_text}</b>\n\n✍️ <b>এবার নোটের বিস্তারিত বিষয়/লেখাটি পাঠান (মনোস্পেস/কোড চাইলে মনো করে দিতে পারেন):</b>")
 
-    # 3. Add Note: Step 2 (Content Input)
+    # 3. Add Note: Step 2 (Content Input with Full Formatting / Mono Support)
     elif current_action == 'waiting_note_content':
         title = state_info.get('note_title')
         now_dt = datetime.datetime.now().strftime("%Y-%m-%d %I:%M %p")
-        run_query("INSERT INTO notes (user_id, title, content, created_at) VALUES (?, ?, ?, ?)", (uid, title, text, now_dt))
+        # Stores HTML formatted text directly so monospace is preserved
+        run_query("INSERT INTO notes (user_id, title, content, created_at) VALUES (?, ?, ?, ?)", (uid, title, html_formatted_text, now_dt))
         del user_states[uid]
         bot.send_message(message.chat.id, f"✅ <b>নোট সফলভাবে সংরক্ষিত হয়েছে!</b>\n📄 শিরোনাম: <b>{title}</b>", reply_markup=main_keyboard(uid))
         show_notes_menu(message.chat.id, uid)
         return
 
-    # 4. Search Notes (Partial / ILIKE Match)
+    # 4. Search Notes
     elif current_action == 'searching_notes':
         del user_states[uid]
         matched_notes = run_query(
             "SELECT id, title FROM notes WHERE user_id=? AND (title ILIKE ? OR content ILIKE ?) ORDER BY id DESC",
-            (uid, f"%{text}%", f"%{text}%"), fetch=True
+            (uid, f"%{raw_text}%", f"%{raw_text}%"), fetch=True
         )
         if not matched_notes:
-            return bot.send_message(message.chat.id, f"❌ '<b>{text}</b>' এর সাথে মিলে এমন কোনো নোট পাওয়া যায়নি।", reply_markup=main_keyboard(uid))
+            return bot.send_message(message.chat.id, f"❌ '<b>{raw_text}</b>' এর সাথে মিলে এমন কোনো নোট পাওয়া যায়নি।", reply_markup=main_keyboard(uid))
         
         markup = types.InlineKeyboardMarkup(row_width=1)
         for n_id, n_title in matched_notes:
             markup.add(types.InlineKeyboardButton(f"📄 {n_title}", callback_data=f"read_note|{n_id}"))
         markup.add(types.InlineKeyboardButton("🔙 নোটস মেনু", callback_data="back_notes_list"))
-        bot.send_message(message.chat.id, f"🔍 '<b>{text}</b>' সম্পর্কিত নোটস রেজাল্ট ({len(matched_notes)} টি):", reply_markup=markup)
+        bot.send_message(message.chat.id, f"🔍 '<b>{raw_text}</b>' সম্পর্কিত নোটস রেজাল্ট ({len(matched_notes)} টি):", reply_markup=markup)
         return
 
-    # 5. Search Files (Drive Files Match)
+    # 5. Search Files
     elif current_action == 'searching':
         del user_states[uid]
         files = run_query("SELECT id, file_id, file_name, file_type FROM files WHERE user_id=? AND file_name ILIKE ? ORDER BY id DESC", 
-                          (uid, f"%{text}%"), fetch=True)
+                          (uid, f"%{raw_text}%"), fetch=True)
         if not files:
-            return bot.send_message(message.chat.id, f"❌ '<b>{text}</b>' নামে কোনো ফাইল পাওয়া যায়নি।", reply_markup=main_keyboard(uid))
+            return bot.send_message(message.chat.id, f"❌ '<b>{raw_text}</b>' নামে কোনো ফাইল পাওয়া যায়নি।", reply_markup=main_keyboard(uid))
 
-        bot.send_message(message.chat.id, f"🔍 '<b>{text}</b>' এর সার্চ রেজাল্ট ({len(files)} টি ফাইল):")
+        bot.send_message(message.chat.id, f"🔍 '<b>{raw_text}</b>' এর সার্চ রেজাল্ট ({len(files)} টি ফাইল):")
         photos = [{'id': f[0], 'file_id': f[1], 'caption': f"📝 {f[2]}"} for f in files if f[3] == 'photo']
         if photos:
             send_photos_as_grid(message.chat.id, photos, uid)
