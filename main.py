@@ -18,7 +18,7 @@ BOT_TOKEN = "8725779053:AAGjKKSa5GjPxnCFfK4HJvRfBM18o4ZtSwg"
 ADMIN_ID = 6271611009
 LOG_CHANNEL_ID = -1003481796766
 
-# Supabase Connection URI (Seoul Region Pooler)
+# Supabase Seoul Connection URI
 DB_URI = "postgresql://postgres.pofuxngbmbkbsvliqyka:czpH1jl4dGQLD84B@aws-0-ap-northeast-2.pooler.supabase.com:6543/postgres"
 RENDER_APP_URL = os.environ.get("RENDER_EXTERNAL_URL", "")
 
@@ -88,6 +88,7 @@ def auto_setup_db():
         user_id BIGINT,
         file_type TEXT, 
         file_id TEXT,
+        file_unique_id TEXT,
         file_name TEXT,
         playlist_name TEXT,
         date TEXT,
@@ -99,6 +100,8 @@ def auto_setup_db():
         username TEXT,
         join_date TEXT
     );
+    ALTER TABLE files ADD COLUMN IF NOT EXISTS file_unique_id TEXT;
+    ALTER TABLE files ADD COLUMN IF NOT EXISTS message_id BIGINT;
     """)
 
 auto_setup_db()
@@ -159,7 +162,7 @@ def start_cmd(message):
         f"📌 <b>কমান্ড নির্দেশিকা:</b>\n"
         f"• নতুন প্লেলিস্ট তৈরি: <code>/add প্লেলিস্টের নাম</code>\n"
         f"• প্লেলিস্ট ডিলিট করতে: <code>/rem</code>\n"
-        f"• ক্যাপশন এডিট করতে ফাইলের মেসেজে <b>Reply</b> দিয়ে নতুন নাম লিখে পাঠান।\n\n"
+        f"• ফাইলের নাম বা ক্যাপশন বদলাতে ওই ফটো/ভিডিওতে <b>Reply</b> দিয়ে নতুন নামটি লিখে পাঠান।\n\n"
         f"🆔 <b>User ID:</b> <code>{uid}</code>\n"
         f"📅 <b>Member Since:</b> {date_now}\n\n"
         f"👇 নিচের মেনু ব্যবহার করুন:"
@@ -174,7 +177,6 @@ def start_cmd(message):
     except:
         bot.send_message(uid, welcome_text, reply_markup=main_keyboard(uid))
 
-# প্লেলিস্ট অ্যাড কমান্ড
 @bot.message_handler(commands=['add', 'new'])
 def add_playlist_cmd(message):
     uid = message.from_user.id
@@ -190,7 +192,6 @@ def add_playlist_cmd(message):
     run_query("INSERT INTO playlists (user_id, playlist_name) VALUES (?, ?)", (uid, pl_name))
     bot.reply_to(message, f"✅ <b>{pl_name}</b> প্লেলিস্টটি সফলভাবে তৈরি হয়েছে!")
 
-# প্লেলিস্ট ডিলিট কমান্ড
 @bot.message_handler(commands=['rem', 'remove'])
 def remove_playlist_cmd(message):
     uid = message.from_user.id
@@ -214,7 +215,7 @@ def menu_controller(message):
     if text == "📁 প্লেলিস্টসমূহ":
         pls = run_query("SELECT playlist_name FROM playlists WHERE user_id = ?", (uid,), fetch=True)
         if not pls:
-            return bot.send_message(message.chat.id, "❌ কোনো প্লেলিস্ট নেই। নতুন বানাতে <code>/add নাম</code> লিখুন।")
+            return bot.send_message(message.chat.id, "❌ কোনো প্লেলিস্ট নেই। নতুন তৈরি করতে <code>/add নাম</code> লিখুন।")
         markup = types.InlineKeyboardMarkup(row_width=2)
         for p in pls:
             markup.add(types.InlineKeyboardButton(f"📂 {p[0]}", callback_data=f"choose_type|{p[0]}|{uid}"))
@@ -259,7 +260,7 @@ def menu_controller(message):
             "❓ <b>ব্যবহার নির্দেশিকা:</b>\n\n"
             "• নতুন প্লেলিস্ট তৈরি: <code>/add প্লেলিস্টের নাম</code>\n"
             "• প্লেলিস্ট মুছতে: <code>/rem</code>\n"
-            "• ক্যাপশন পরিবর্তন করতে চাইলে ফাইলের মেসেজে <b>Reply</b> দিয়ে নতুন নাম লিখে পাঠিয়ে দিন।\n"
+            "• যেকোনো ফটো/ভিডিওর নাম পরিবর্তন করতে ওই ছবিটিতে <b>Reply</b> দিয়ে নতুন নামটি লিখে দিন।\n"
             "• ছবিগুলো একসাথে ১০টি করে অ্যালবামে আসবে।"
         )
         markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("📩 Admin Inbox", url="https://t.me/rm_rasel_hossain"))
@@ -321,18 +322,23 @@ def process_media_batch(uid, chat_id):
 def file_auto_upload(message):
     uid = message.from_user.id
     f_type = message.content_type
+    f_unique_id = None
 
     if f_type == 'photo':
         f_id = message.photo[-1].file_id
+        f_unique_id = message.photo[-1].file_unique_id
         f_name = message.caption or f"Photo_{datetime.datetime.now().strftime('%H%M%S')}"
     elif f_type == 'video':
         f_id = message.video.file_id
+        f_unique_id = message.video.file_unique_id
         f_name = message.caption or message.video.file_name or "Video"
     elif f_type == 'document':
         f_id = message.document.file_id
+        f_unique_id = message.document.file_unique_id
         f_name = message.caption or message.document.file_name or "Document"
     else:
         f_id = message.audio.file_id if f_type == 'audio' else message.voice.file_id
+        f_unique_id = getattr(message.audio or message.voice, 'file_unique_id', None)
         f_name = message.caption or (message.audio.file_name if f_type == 'audio' and message.audio.file_name else "Audio")
 
     if LOG_CHANNEL_ID:
@@ -341,7 +347,7 @@ def file_auto_upload(message):
         except:
             pass
 
-    file_item = {'type': f_type, 'id': f_id, 'name': f_name}
+    file_item = {'type': f_type, 'id': f_id, 'unique_id': f_unique_id, 'name': f_name}
 
     if uid not in media_groups:
         media_groups[uid] = {'files': [], 'timer': None}
@@ -363,7 +369,7 @@ def callback_manager(call):
     data = call.data.split('|')
     action = data[0]
 
-    # ১. প্লেলিস্ট ডিলিট কনফার্মেশন
+    # প্লেলিস্ট ডিলিট কনফার্মেশন
     if action == "ask_del_pl":
         pl_name = data[1]
         markup = types.InlineKeyboardMarkup(row_width=2)
@@ -383,7 +389,7 @@ def callback_manager(call):
     elif action == "cancel_del":
         bot.edit_message_text("❌ বাতিল করা হয়েছে।", call.message.chat.id, call.message.message_id)
 
-    # ২. ব্যাচ ফাইল সেভ
+    # ব্যাচ ফাইল সেভ
     elif action == "save_batch_to":
         pl_name = data[1]
         f_state = user_states.get(uid)
@@ -395,14 +401,14 @@ def callback_manager(call):
         
         for item in batch:
             run_query(
-                "INSERT INTO files (user_id, file_type, file_id, file_name, playlist_name, date) VALUES (?, ?, ?, ?, ?, ?)",
-                (uid, item['type'], item['id'], item['name'], pl_name, today)
+                "INSERT INTO files (user_id, file_type, file_id, file_unique_id, file_name, playlist_name, date) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (uid, item['type'], item['id'], item.get('unique_id'), item['name'], pl_name, today)
             )
         
         del user_states[uid]
         bot.edit_message_text(f"✅ সফলভাবে <b>{len(batch)}</b> টি ফাইল <b>{pl_name}</b> প্লেলিস্টে সেভ হয়েছে!", call.message.chat.id, call.message.message_id)
 
-    # ৩. স্মার্ট ক্যাটাগরি ও অটো-ডিটেকশন
+    # স্মার্ট ক্যাটাগরি ও অটো-ডিটেকশন
     elif action == "choose_type":
         pl_name = data[1]
         target_uid = int(data[2]) if len(data) > 2 else uid
@@ -416,7 +422,6 @@ def callback_manager(call):
             ft = t[0]
             avail.add('audio' if ft in ['audio', 'voice'] else ft)
 
-        # যদি শুধু এক প্রকার ফাইল থাকে, সরাসরি ফাইলগুলো পাঠিয়ে দেবে
         if len(avail) == 1:
             only_type = list(avail)[0]
             call.data = f"show_filtered|{pl_name}|{only_type}|{target_uid}"
@@ -435,7 +440,7 @@ def callback_manager(call):
 
         bot.edit_message_text(f"📂 <b>প্লেলিস্ট: {pl_name}</b>\nকোন ধরনের ফাইল দেখতে চান?", call.message.chat.id, call.message.message_id, reply_markup=markup)
 
-    # ৪. ফাইল গ্রিড ও অ্যালবাম ভিউ
+    # ফাইল গ্রিড ও অ্যালবাম ভিউ
     elif action == "show_filtered":
         pl_name = data[1]
         filter_type = data[2]
@@ -452,14 +457,12 @@ def callback_manager(call):
             return bot.answer_callback_query(call.id, "❌ কোনো ফাইল নেই!", show_alert=True)
 
         bot.answer_callback_query(call.id, "ফাইলগুলো লোড হচ্ছে...")
-        bot.send_message(call.message.chat.id, f"📂 <b>{pl_name}</b> ({len(files)} টি আইটেম):\n<i>(নাম বা ক্যাপশন বদলাতে ফাইলের মেসেজে Reply দিন)</i>")
+        bot.send_message(call.message.chat.id, f"📂 <b>{pl_name}</b> ({len(files)} টি আইটেম):\n<i>(যেকোনো ফাইলের নাম বা ক্যাপশন বদলাতে সেটিতে Reply দিন)</i>")
 
-        # ফটো হলে ১০টা করে অ্যালবামে পাঠানো হবে
         photos = [{'id': f[0], 'file_id': f[1], 'caption': f"📝 {f[2]}"} for f in files if f[3] == 'photo']
         if photos:
             send_photos_as_grid(call.message.chat.id, photos, target_uid)
 
-        # অন্যান্য ফাইল
         others = [f for f in files if f[3] != 'photo']
         for f_db_id, fid, fname, ftype in others:
             cap = f"📝 {fname}"
@@ -474,7 +477,33 @@ def callback_manager(call):
             except Exception as e:
                 logging.error(f"Send error: {e}")
 
-    # ৫. অ্যাডমিন প্যানেল ভিউ
+    # তারিখ অনুযায়ী ফাইল দেখা
+    elif action == "view_date":
+        sel_date = data[1]
+        files = run_query("SELECT id, file_id, file_name, file_type FROM files WHERE user_id=? AND date=? ORDER BY id ASC", 
+                          (uid, sel_date), fetch=True)
+        if not files:
+            return bot.answer_callback_query(call.id, "❌ কোনো ফাইল নেই!")
+
+        bot.answer_callback_query(call.id, f"{sel_date} এর ফাইল ওপেন হচ্ছে...")
+        bot.send_message(call.message.chat.id, f"📅 <b>{sel_date}</b> তারিখে আপলোডকৃত ফাইলসমূহ:")
+
+        photos = [{'id': f[0], 'file_id': f[1], 'caption': f"📝 {f[2]}"} for f in files if f[3] == 'photo']
+        if photos:
+            send_photos_as_grid(call.message.chat.id, photos, uid)
+
+        others = [f for f in files if f[3] != 'photo']
+        for f_db_id, fid, fname, ftype in others:
+            cap = f"📝 {fname}"
+            if ftype == 'video':
+                s = bot.send_video(call.message.chat.id, fid, caption=cap)
+            elif ftype == 'document':
+                s = bot.send_document(call.message.chat.id, fid, caption=cap)
+            elif ftype in ['audio', 'voice']:
+                s = bot.send_audio(call.message.chat.id, fid, caption=cap)
+            run_query("UPDATE files SET message_id = ? WHERE id = ?", (s.message_id, f_db_id))
+
+    # অ্যাডমিন প্যানেল হ্যান্ডলার
     elif action == "adm_list_users" and uid == ADMIN_ID:
         users = run_query("SELECT user_id, full_name, username FROM users_list ORDER BY join_date DESC", fetch=True)
         markup = types.InlineKeyboardMarkup(row_width=1)
@@ -534,14 +563,43 @@ def global_text_input(message):
     uid = message.from_user.id
     text = message.text.strip()
 
-    # ১. ইউজার কোনো মেসেজে Reply দিয়ে নাম/ক্যাপশন পাঠালে অটো এডিট হবে
+    # ১. ইউজার কোনো ফটো/ফাইলে Reply দিয়ে নতুন নাম পাঠালে
     if message.reply_to_message:
-        replied_msg_id = message.reply_to_message.message_id
-        matched = run_query("SELECT id FROM files WHERE user_id=? AND message_id=?", (uid, replied_msg_id), fetch=True)
+        replied = message.reply_to_message
+        target_file_id = None
+        target_unique_id = None
+
+        if replied.photo:
+            target_file_id = replied.photo[-1].file_id
+            target_unique_id = replied.photo[-1].file_unique_id
+        elif replied.video:
+            target_file_id = replied.video.file_id
+            target_unique_id = replied.video.file_unique_id
+        elif replied.document:
+            target_file_id = replied.document.file_id
+            target_unique_id = replied.document.file_unique_id
+        elif replied.audio:
+            target_file_id = replied.audio.file_id
+            target_unique_id = replied.audio.file_unique_id
+        elif replied.voice:
+            target_file_id = replied.voice.file_id
+            target_unique_id = replied.voice.file_unique_id
+
+        # ফাইল আইডি অথবা মেসেজ আইডি দিয়ে খোঁজা
+        matched = None
+        if target_unique_id:
+            matched = run_query("SELECT id FROM files WHERE user_id=? AND file_unique_id=?", (uid, target_unique_id), fetch=True)
+        if not matched and target_file_id:
+            matched = run_query("SELECT id FROM files WHERE user_id=? AND file_id=?", (uid, target_file_id), fetch=True)
+        if not matched:
+            matched = run_query("SELECT id FROM files WHERE user_id=? AND message_id=?", (uid, replied.message_id), fetch=True)
+
         if matched:
             f_db_id = matched[0][0]
             run_query("UPDATE files SET file_name = ? WHERE id = ?", (text, f_db_id))
             return bot.reply_to(message, f"✅ এই ফাইলের নতুন ক্যাপশন সফলভাবে সেভ হয়েছে:\n📝 <b>{text}</b>")
+        else:
+            return bot.reply_to(message, "⚠️ এই ফাইলটি আপনার ড্রাইভে রেকর্ড হিসেবে খুঁজে পাওয়া যায়নি। অনুগ্রহ করে প্লেলিস্ট থেকে ওপেন করা ফাইলের মূল মেসেজে Reply দিন।")
 
     state_info = user_states.get(uid, {})
     current_action = state_info.get('action')
@@ -549,12 +607,12 @@ def global_text_input(message):
     # ২. সার্চ হ্যান্ডলার
     if current_action == 'searching':
         del user_states[uid]
-        files = run_query("SELECT id, file_id, file_name, file_type FROM files WHERE user_id=? AND file_name LIKE ? ORDER BY id DESC", 
+        files = run_query("SELECT id, file_id, file_name, file_type FROM files WHERE user_id=? AND file_name ILIKE ? ORDER BY id DESC", 
                           (uid, f"%{text}%"), fetch=True)
         if not files:
             return bot.send_message(message.chat.id, f"❌ '<b>{text}</b>' নামে কোনো ফাইল পাওয়া যায়নি।", reply_markup=main_keyboard(uid))
 
-        bot.send_message(message.chat.id, f"🔍 '<b>{text}</b>' এর সার্চ রেজাল্ট:")
+        bot.send_message(message.chat.id, f"🔍 '<b>{text}</b>' এর সার্চ রেজাল্ট ({len(files)} টি ফাইল):")
         photos = [{'id': f[0], 'file_id': f[1], 'caption': f"📝 {f[2]}"} for f in files if f[3] == 'photo']
         if photos:
             send_photos_as_grid(message.chat.id, photos, uid)
